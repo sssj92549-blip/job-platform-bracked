@@ -18,7 +18,7 @@ class JobPlatformApplicationTests {
 
     @Test
     void pingUsesApiEnvelopeAndRequestId() throws Exception {
-        mvc.perform(get("/api/v1/system/ping"))
+        mvc.perform(get("/api/system/ping"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.status").value("UP"))
@@ -28,7 +28,7 @@ class JobPlatformApplicationTests {
 
     @Test
     void unknownEndpointUsesJson404() throws Exception {
-        mvc.perform(get("/api/v1/does-not-exist"))
+        mvc.perform(get("/api/does-not-exist"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(40401));
     }

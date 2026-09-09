@@ -20,13 +20,14 @@ spring:
       maximum-pool-size: 10
       minimum-idle: 1
       connection-timeout: 5000
-  redis:
-    host: ${REDIS_HOST:127.0.0.1}
-    port: ${REDIS_PORT:6379}
-    database: ${REDIS_DATABASE:1}
-    password: ${REDIS_PASSWORD:}
-    connect-timeout: 3s
-    timeout: 3s
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      database: ${REDIS_DATABASE:1}
+      password: ${REDIS_PASSWORD:}
+      connect-timeout: 3s
+      timeout: 3s
   servlet:
     multipart:
       max-file-size: 10MB
@@ -35,8 +36,6 @@ spring:
     time-zone: Asia/Shanghai
     serialization:
       write-dates-as-timestamps: false
-  mvc:
-    throw-exception-if-no-handler-found: true
   web:
     resources:
       add-mappings: false

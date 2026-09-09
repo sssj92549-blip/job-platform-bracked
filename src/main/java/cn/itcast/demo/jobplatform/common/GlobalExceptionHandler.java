@@ -3,6 +3,7 @@ package cn.itcast.demo.jobplatform.common;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -10,11 +11,17 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
-import javax.validation.ConstraintViolationException;
+import jakarta.validation.ConstraintViolationException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    @ExceptionHandler(org.springframework.dao.DataAccessResourceFailureException.class)
+    public ResponseEntity<ApiResponse<Void>> unavailable(Exception e) {
+        log.error("Database or Redis unavailable", e);
+        return ResponseEntity.status(503).body(ApiResponse.error(50301, "数据库或缓存服务不可用，请稍后重试"));
+    }
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Void>> business(BusinessException e) {
@@ -23,7 +30,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     @Override
     protected ResponseEntity<Object> handleExceptionInternal(Exception e, Object body,
-            HttpHeaders headers, HttpStatus status, WebRequest request) {
+            HttpHeaders headers, HttpStatusCode status, WebRequest request) {
         String message = status == HttpStatus.NOT_FOUND ? "资源不存在" : "请求参数或方法不正确";
         int code = status == HttpStatus.NOT_FOUND ? 40401 : status.value() * 100 + 1;
         return new ResponseEntity<>(ApiResponse.error(code, message), headers, status);
@@ -34,8 +41,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return ResponseEntity.badRequest().body(ApiResponse.error(40001, "参数校验失败"));
     }
 
-    @ExceptionHandler(MaxUploadSizeExceededException.class)
-    public ResponseEntity<ApiResponse<Void>> upload(MaxUploadSizeExceededException e) {
+    @Override
+    protected ResponseEntity<Object> handleMaxUploadSizeExceededException(
+            MaxUploadSizeExceededException e, HttpHeaders headers, HttpStatusCode status,
+            WebRequest request) {
         return ResponseEntity.status(413).body(ApiResponse.error(41301, "上传文件过大"));
     }
 

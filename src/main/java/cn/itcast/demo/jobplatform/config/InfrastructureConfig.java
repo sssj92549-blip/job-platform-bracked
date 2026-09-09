@@ -41,7 +41,7 @@ public class InfrastructureConfig {
             @Value("${app.ai.internal-token}") String token,
             @Value("${app.ai.connect-timeout}") Duration connectTimeout,
             @Value("${app.ai.read-timeout}") Duration readTimeout) {
-        return builder.rootUri(baseUrl).setConnectTimeout(connectTimeout).setReadTimeout(readTimeout)
+        return builder.rootUri(baseUrl).connectTimeout(connectTimeout).readTimeout(readTimeout)
                 .additionalInterceptors((request, body, execution) -> {
                     if (!token.isBlank()) {
                         request.getHeaders().set("X-Internal-Token", token);
