@@ -94,6 +94,6 @@ public class AccountService {
         return new AuthViews.User(p.getId().toString(),a.getId().toString(),a.getUsername(),a.getPhone(),p.getRole(),
             p.getName(),p.getEducation(),p.getAvatarPath()==null?null:"/api/users/"+p.getId()+"/avatar",
             p.getCity(),p.getIntroduction(),Boolean.TRUE.equals(p.getDiscoverable()),p.getCompanyName(),p.getIndustry(),
-            p.getCompanyDescription(),p.getReviewStatus(),p.getReviewReason(),true,p.getCreatedAt().atOffset(ZoneOffset.ofHours(8)));
+            p.getCompanyDescription(),p.getReviewStatus(),p.getReviewReason(),Boolean.TRUE.equals(a.getEnabled()) && Boolean.TRUE.equals(p.getEnabled()),p.getCreatedAt().atOffset(ZoneOffset.ofHours(8)));
     }
 }
