@@ -17,6 +17,12 @@ import jakarta.validation.ConstraintViolationException;
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    /** 并发提交最终由数据库唯一约束兜底，不泄露索引名及SQL。 */
+    @ExceptionHandler(org.springframework.dao.DuplicateKeyException.class)
+    public ResponseEntity<ApiResponse<Void>> duplicate(Exception e) {
+        return ResponseEntity.status(409).body(ApiResponse.error(40902,"相同请求已被处理，请刷新后重试"));
+    }
+
     @ExceptionHandler(org.springframework.dao.DataAccessResourceFailureException.class)
     public ResponseEntity<ApiResponse<Void>> unavailable(Exception e) {
         log.error("Database or Redis unavailable", e);

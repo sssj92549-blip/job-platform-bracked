@@ -1,8 +1,8 @@
 # 招聘系统接口文档
 
-版本：v1.1（Spring Boot 3 / 多身份开发契约）  
+版本：1.2（Spring Boot 3 / 三端业务及 Redis 实现）
 适用项目：Spring Boot 3.5.16 + Java 17 + MyBatis-Plus 3.5.17 + MySQL / Python 3.10 + FastAPI + PaddleOCR + 大模型 API + Chroma。  
-说明：当前已实现认证模块（验证码、注册、登录、会话恢复、身份列表/添加/选择/切换、退出、当前用户），其他招聘业务接口仍为开发契约。本文件已同步至桌面 jiekou.md，包含完整业务与多身份接口。未指定的实现细节按本文约定，可在开发前统一调整。
+说明：认证、多身份、个人资料、职位、简历、投递、AI异步任务、人才检索与用户/职位审核接口已实现。Java通过RestTemplate调用Python，Redis用于限流、短期防重及职位详情缓存；业务状态持久化在MySQL。本文同步至桌面jiekou.md和前端docs/backend-api.md。实现范围以本文接口清单为准。
 
 ## 1. 通用约定
 
@@ -246,6 +246,7 @@ Java 和 Python 的 JSON 接口均返回此信封；下文“输出”描述的�
 |---|---|---|---|---|
 | GET | `/api/jobs` | 公开 | query：`page?, size?, keyword?, city?, education?, salaryMin?, salaryMax?` | `Page<Job>`，仅启用且审核通过企业的 APPROVED 职位 |
 | GET | `/api/jobs/{jobId}` | 公开 | path：jobId | `Job`，非公开职位返回 404 |
+| GET | `/api/companies/{companyId}` | 公开 | path：companyId | `{id, companyName, industry, city, companyDescription, avatarUrl}`，仅启用且已审核企业；不返回联系方式 |
 | POST | `/api/company/jobs` | 企业 | body：JobInput | HTTP 201，`Job`，状态 DRAFT |
 | GET | `/api/company/jobs` | 企业 | query：`page?, size?, status?, keyword?` | `Page<Job>`，仅自己的职位 |
 | GET | `/api/company/jobs/{jobId}` | 企业 | path：jobId | `Job`，仅自己的职位，可看非公开状态 |
@@ -278,7 +279,7 @@ Java 和 Python 的 JSON 接口均返回此信封；下文“输出”描述的�
 - reparse 仅当前有效简历且 SUCCESS/FAILED 时允许；清除确认状态并递增版本，旧投递快照不变。确认时可人工修正 AI 字段；原解析字段保留，confirmedProfile 保存最终值。
 - confirm 仅当前简历且解析 SUCCESS 时允许；同一 expectedVersion 重复提交返回 40904，前端重新读取即可。确认后更新索引元数据和版本，成功前不参与推荐。
 - retry-index 仅 parseStatus=SUCCESS 且 indexStatus=FAILED 时允许。索引失败不阻止确认或投递。
-- Java 在创建任务的事务提交后执行异步工作；任务状态持久化，服务重启后恢复 PENDING，超时 PROCESSING 标记 FAILED 或有限重试，不能永久卡住。
+- Java先在MySQL提交任务，后台每2秒领取已提交的PENDING工作；解析、生成、索引分别使用调度线程。超过10分钟的PROCESSING解析/生成任务标记FAILED；向量任务重新领取并幂等执行，普通调用失败最多尝试3次，重试间隔30/60秒。app.jobs.enabled=false可暂停轮询。
 - 附件下载使用安全 Content-Disposition 文件名；历史附件仅通过授权的投递文件接口访问。
 
 ## 6. 投递与企业候选人处理
@@ -314,8 +315,8 @@ Java 和 Python 的 JSON 接口均返回此信封；下文“输出”描述的�
 - 求职者仅使用本人已确认当前简历；匹配/面试题选择公开有效职位。企业仅使用自己收到的投递快照，不能凭任意 resumeId 调用。
 - 企业不可对 WITHDRAWN 投递创建新 AI 任务。任务创建时固定简历和职位版本，后续资料变更不污染结果。
 - 面试题生成只是内容生成，不创建面试安排。助手基于确认资料、技能和解析摘要回答；每次请求独立，无 history/sessionId。
-- 同创建者、类型、简历版本、职位版本且正在执行的任务复用；助手另以 question 的哈希区分。返回已有任务时 HTTP 200。失败任务可重新 POST 创建新任务，不无限自动重试。
-- 解析调用建议读取超时 180 秒，生成 90 秒，向量操作 30 秒；连接超时 3 秒。超时记录 FAILED，错误为 50401；配置项允许调整。
+- 同创建者、类型、简历版本、职位版本、投递ID且正在执行的任务复用；助手另以 question 的哈希区分。返回已有任务时 HTTP 200。失败任务可重新 POST 创建新任务，不无限自动重试。
+- 当前RestTemplate统一连接超时3秒、读取超时180秒，通过app.ai.connect-timeout/read-timeout配置；Python模型调用自身默认90秒。超时或连接失败记录FAILED，错误为50401。
 - Java 对模型结果进行结构校验：分数必须整数且 0～100，题目必须 10 道。简历文本作为数据处理，不能作为系统指令；模型不得获取文件访问、SQL 或业务写入权限。
 
 匹配请求示例：
@@ -644,7 +645,7 @@ Session 输出（以下展示待选择状态）：
 
 ### 框架升级说明
 
-后端使用 Spring Boot 3.5.16、Java 17、MyBatis-Plus 3.5.17 的 Boot 3 Starter；Servlet 和 Validation 使用 jakarta 包，Redis 配置为 spring.data.redis。升级不改变 Java/Python HTTP 通信和原业务路径。框架健康接口已实现，账号认证已实现，招聘业务仍待实现。
+后端使用 Spring Boot 3.5.16、Java 17、MyBatis-Plus 3.5.17 的 Boot 3 Starter；Servlet 和 Validation 使用 jakarta 包，Redis 配置为 spring.data.redis。升级不改变 Java/Python HTTP 通信和原业务路径。本文认证与招聘业务接口均已实现，真实MySQL与Redis集成测试已验证核心流程。
 
 参考：[Spring Boot 3.5 要求](https://docs.spring.io/spring-boot/3.5/system-requirements.html)、[MyBatis-Plus 安装](https://baomidou.com/en/getting-started/install/)。
 
@@ -654,3 +655,27 @@ Session 输出（以下展示待选择状态）：
 业务逻辑位于AuthService和AccountService；Controller只处理HTTP输入输出。Account/Profile继承BaseEntity，createdAt/updatedAt通过MyBatis-Plus的@TableField填充注解和EntityTimeHandler自动维护，对应created_at/updated_at。时间注解适用于传实体的MyBatis-Plus插入和更新。
 
 完整建表脚本位于后端docs/init.sql。普通注册不创建管理员，且账号和初始档案在同一事务中落库。Redis不可用时认证失败并返回503，不降级为绕过锁定。验证码、注册和登录按实际连接IP限制每分钟120次；部署反向代理时需统一规划可信代理及限流策略。
+
+
+## 15. Redis与实际运行规则
+
+Redis连接沿用spring.data.redis，本地127.0.0.1:6379、1号库、无密码。业务数据仍在MySQL；Redis失效不等于任务或投递数据消失。
+
+| Key前缀 | 用途 | TTL/规则 |
+|---|---|---|
+| `job-platform:auth:` | 登录失败计数、账号锁定、认证IP限流 | 保留认证模块规则 |
+| `job-platform:business:rate:` | 按当前档案ID和操作限流 | Lua原子INCR+EXPIRE，首次请求开始固定窗口 |
+| `job-platform:business:lock:` | 简历上传、投递、AI任务提交的短期防重 | SET NX，30秒；随机token，Lua比较后释放 |
+| `job-platform:business:job:{id}:{version}` | 公开职位详情缓存 | 120秒；编辑、审核、关闭、删除清理；读取缓存前重新检查MySQL职位与企业状态 |
+
+具体业务频率：上传简历10次/小时、重新解析10次/小时、索引重试10次/小时、头像20次/小时、投递30次/分钟、人才检索10次/分钟、AI生成6次/分钟且60次/小时。每个档案最多3个进行中的AI生成任务。限流返回42902，短期提交锁冲突返回40902；数据库仍以唯一键防止重复投递/进行中AI任务。
+
+职位缓存不可用时回源MySQL；限流或提交锁所需Redis不可用时返回50301，不绕过控制。没有缓存手机号、简历全文、投递快照、会话或AI任务结果；Session仍由Servlet容器管理。
+
+人才检索单次最多10000个合格简历版本，超出返回40902，不静默截断白名单。Java发送白名单并在Python返回后重新校验发现开关、启用状态、确认状态、当前版本和投递关系。关闭职位或禁用企业后，即使命中Redis也不能继续公开访问。
+
+文件校验：PDF由PDFBox检查签名、可读性、加密状态和1–20页；JPEG/PNG限制2MB及1600万像素并重新编码。下载校验路径始终位于uploads内，历史投递附件在当前简历删除后仍可授权下载。
+
+解析文本和确认资料组合后若超过60000字，返回可读错误，请精简简历，不静默截断。Java对AI评分、面试题数量和字段长度做第二次结构校验。
+
+已删除框架示例`/api/system/ping`，依赖健康检查使用`/actuator/health`。当前实现没有引入JWT，继续采用Session、CSRF和AuthInterceptor；所有请求路径均不带版本段。

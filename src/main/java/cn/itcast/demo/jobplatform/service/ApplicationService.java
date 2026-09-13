@@ -1,0 +1,107 @@
+package cn.itcast.demo.jobplatform.service;
+
+import cn.itcast.demo.jobplatform.common.*;
+import cn.itcast.demo.jobplatform.dto.RecruitmentRequests.*;
+import cn.itcast.demo.jobplatform.entity.*;
+import cn.itcast.demo.jobplatform.mapper.*;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.databind.*;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.core.io.Resource;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DuplicateKeyException;
+import java.util.*;
+import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
+
+/** 投递快照不可变；企业修改展示来源不覆盖求职者档案。 */
+@Service
+public class ApplicationService {
+    private final ApplicationMapper applications;
+    private final ResumeMapper resumes;
+    private final ResumeJobMatchMapper matches;
+    private final ProfileMapper profiles;
+    private final JobService jobs;
+    private final ResumeService resumeService;
+    private final BusinessSupport b;
+    private final BusinessRedis redis;
+    private final AuditService audit;
+    private final FileStorageService files;
+    private final TransactionTemplate tx;
+    public ApplicationService(ApplicationMapper applications,ResumeMapper resumes,ResumeJobMatchMapper matches,ProfileMapper profiles,JobService jobs,ResumeService resumeService,BusinessSupport b,BusinessRedis redis,AuditService audit,FileStorageService files,PlatformTransactionManager tm) {
+        this.applications=applications; this.resumes=resumes; this.matches=matches; this.profiles=profiles; this.jobs=jobs; this.resumeService=resumeService; this.b=b; this.redis=redis; this.audit=audit; this.files=files; tx=new TransactionTemplate(tm);
+    }
+    public Application own(Long id,Profile p,boolean lock) {
+        Application a=applications.selectOne(new QueryWrapper<Application>().eq("id",id).last(lock?"FOR UPDATE":""));
+        if(a==null) missing();
+        if("JOB_SEEKER".equals(p.getRole())) { if(!a.getCandidateId().equals(p.getId())) missing(); }
+        else if("COMPANY".equals(p.getRole())) { if(!jobs.require(a.getJobId(),false).getCompanyId().equals(p.getId())) missing(); }
+        else forbidden(); return a;
+    }
+    public ObjectNode view(Application a,boolean summary) {
+        ObjectNode out=b.view(a,"jobSnapshot"); JsonNode job=b.read(a.getJobSnapshot()),snapshot=b.read(a.getResumeSnapshot());
+        out.put("jobTitle",job.path("title").asText()); out.put("companyName",job.path("companyName").asText());
+        ResumeJobMatch match=matches.selectOne(new QueryWrapper<ResumeJobMatch>().eq("resume_id",a.getResumeId()).eq("resume_version",a.getResumeVersion()).eq("job_id",a.getJobId()).eq("job_version",a.getJobVersion()));
+        out.set("matchScore",b.json.valueToTree(match==null?null:match.getScore()));
+        if(summary) {
+            out.remove("resumeSnapshot"); String name=snapshot.path("confirmedProfile").path("name").asText();
+            if("AI".equals(a.getProfileSource()) && snapshot.path("aiProfile").hasNonNull("name")) name=snapshot.path("aiProfile").path("name").asText(); out.put("candidateName",name);
+        } else {
+            ObjectNode s=(ObjectNode)snapshot.deepCopy(); s.put("downloadUrl","/api/applications/"+a.getId()+"/resume-file"); out.set("resumeSnapshot",s);
+        }
+        return out;
+    }
+    public ObjectNode create(Apply input,HttpServletRequest request) {
+        Profile p=b.actor(request,"JOB_SEEKER"); redis.limit(p.getId(),"apply",30,60);
+        String key="apply:"+p.getId()+":"+input.jobId(),token=redis.lock(key);
+        try {
+            return tx.execute(s->{
+                Job j=jobs.require(input.jobId(),true); Profile company=profiles.selectOne(new QueryWrapper<Profile>().eq("id",j.getCompanyId()).last("FOR UPDATE"));
+                if(!"APPROVED".equals(j.getStatus())||!b.available(company)) state("职位当前不可投递");
+                Resume r=resumeService.confirmed(input.resumeId(),input.resumeVersion(),p.getId());
+                Application a=new Application(); a.setCandidateId(p.getId()); a.setJobId(j.getId()); a.setResumeId(r.getId()); a.setResumeVersion(r.getVersion()); a.setJobVersion(j.getVersion()); a.setStatus("SUBMITTED"); a.setProfileSource("CONFIRMED");
+                a.setJobSnapshot(b.write(jobs.view(j,true)));
+                a.setResumeSnapshot(b.write(b.object("confirmedProfile",b.read(r.getConfirmedProfile()),"originalProfile",b.read(r.getOriginalProfile()),"aiProfile",b.object("name",r.getParsedName(),"phone",r.getParsedPhone(),"education",r.getParsedEducation(),"skills",b.read(r.getParsedSkills())),"conflictStatus",r.getConflictStatus(),"conflicts",b.read(r.getConflicts()),"extractedText",r.getExtractedText())));
+                applications.insert(a); return view(a,false);
+            });
+        } catch(DuplicateKeyException e) { throw new BusinessException(HttpStatus.CONFLICT,40903,"已投递该职位，撤回后也不能重复投递"); }
+        finally { redis.unlock(key,token); }
+    }
+    public PageResult<ObjectNode> list(Map<String,String> q,boolean company,HttpServletRequest request) {
+        Profile p=b.actor(request,company?"COMPANY":"JOB_SEEKER"); QueryWrapper<Application> w=new QueryWrapper<>();
+        if(company) w.apply("job_id in (select id from job where company_id={0})",p.getId()); else w.eq("candidate_id",p.getId());
+        if(q.containsKey("jobId")&&!q.get("jobId").isBlank()) w.eq("job_id",q.get("jobId"));
+        if(q.containsKey("status")&&!q.get("status").isBlank()) w.eq("status",q.get("status"));
+        Page<Application> page=applications.selectPage(new Page<>(page(q),size(q)),w.orderByDesc("created_at","id"));
+        return new PageResult<>(page.getRecords().stream().map(a->view(a,true)).toList(),page.getTotal(),page.getCurrent(),page.getSize());
+    }
+    public ObjectNode detail(Long id,HttpServletRequest request) { return view(own(id,b.actor(request,"JOB_SEEKER","COMPANY"),false),false); }
+    @Transactional
+    public ObjectNode change(Long id,String status,String source,HttpServletRequest request) {
+        Profile p=b.actor(request,"WITHDRAWN".equals(status)?"JOB_SEEKER":"COMPANY"); Application a=own(id,p,true);
+        String before=a.getStatus();
+        if(source!=null) {
+            if("WITHDRAWN".equals(before)) state("已撤回投递不能更改展示来源");
+            String previous=a.getProfileSource(); a.setProfileSource(source);
+            audit.record(p.getId(),"APPLICATION",id,"ADOPT_"+source,null,b.object("profileSource",previous),b.object("profileSource",source));
+        } else if(!before.equals(status)) {
+            Set<String> allowed=switch(before) {
+                case "SUBMITTED" -> Set.of("VIEWED","SHORTLISTED","REJECTED","WITHDRAWN");
+                case "VIEWED" -> Set.of("SHORTLISTED","REJECTED","WITHDRAWN");
+                case "SHORTLISTED" -> Set.of("REJECTED","WITHDRAWN"); default -> Set.of();
+            };
+            if(!allowed.contains(status)) state("当前投递状态不允许此操作"); a.setStatus(status);
+        }
+        applications.updateById(a); return view(a,false);
+    }
+    public ResponseEntity<Resource> download(Long id,HttpServletRequest request) {
+        Application a=own(id,b.actor(request,"JOB_SEEKER","COMPANY"),false);
+        // 附件可能属于已被替换或逻辑删除的简历，使用专用只读Mapper获取历史文件。
+        Resume r=resumes.historical(a.getResumeId()); if(r==null) missing(); return files.download(r.getFilePath(),r.getFileName(),true);
+    }
+}

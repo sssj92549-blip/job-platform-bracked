@@ -17,11 +17,11 @@ class JobPlatformApplicationTests {
     private MockMvc mvc;
 
     @Test
-    void pingUsesApiEnvelopeAndRequestId() throws Exception {
-        mvc.perform(get("/api/system/ping"))
+    void sessionUsesApiEnvelopeAndRequestId() throws Exception {
+        mvc.perform(get("/api/auth/session"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
-                .andExpect(jsonPath("$.data.status").value("UP"))
+                .andExpect(jsonPath("$.data.stage").value("ANONYMOUS"))
                 .andExpect(jsonPath("$.requestId").isNotEmpty())
                 .andExpect(header().exists("X-Request-Id"));
     }

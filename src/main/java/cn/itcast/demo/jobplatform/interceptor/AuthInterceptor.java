@@ -36,7 +36,7 @@ public class AuthInterceptor implements HandlerInterceptor {
         if(Set.of("/api/auth/captcha","/api/auth/login","/api/auth/register").contains(path)) guard.rateLimit(request.getRemoteAddr());
         if(!read) SessionSupport.checkCsrf(request);
         if(path.startsWith("/api/auth/")) return true;
-        if(read && (path.equals("/api/system/ping") || path.equals("/api/jobs") || path.matches("/api/jobs/[0-9]+"))) return true;
+        if(read && (path.equals("/api/jobs") || path.matches("/api/jobs/[0-9]+") || path.matches("/api/companies/[0-9]+") || path.matches("/api/users/[0-9]+/avatar"))) return true;
         AuthViews.User user=auth.requireUser(request);
         AuthService.checkProfileHeader(request,request.getSession());
         String required=path.startsWith("/api/admin/")?"ADMIN":path.startsWith("/api/company/")?"COMPANY":path.startsWith("/api/resumes")?"JOB_SEEKER":null;
