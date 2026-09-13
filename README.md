@@ -1,6 +1,6 @@
 # jobPlatform 招聘平台后端
 
-已升级至 Spring Boot 3 系列；基于 Java 17、Spring Boot 3.5.16、MyBatis-Plus 3.5.17、MySQL 和 Redis。已实现登录注册和多身份认证，招聘业务接口按 [接口文档](docs/jiekou.md) 继续开发。
+已升级至 Spring Boot 3 系列；基于 Java 17、Spring Boot 3.5.16、MyBatis-Plus 3.5.17、MySQL 和 Redis。已实现认证、多身份及接口文档中的三端招聘业务，详情见 [接口文档](docs/jiekou.md)。
 
 ## 本地启动
 
@@ -22,10 +22,9 @@ $env:JAVA_HOME = 'C:\Users\S\.jdks\ms-17.0.16'
 
 | 接口 | 用途 |
 |---|---|
-| `GET http://localhost:8080/api/system/ping` | 验证 HTTP 服务和统一响应；不代表数据库已连接 |
 | `GET http://localhost:8080/actuator/health` | 检查 MySQL、Redis 等依赖，健康返回 200/UP，失败返回 503/DOWN |
 
-Actuator 使用原生健康响应，不套业务信封，且不对外显示连接详情。Python 服务尚未实现，不计入健康检查。
+Actuator 使用原生健康响应，不套业务信封，且不对外显示连接详情。Python服务位于E:/python/code/job-platform-ai，默认7999；其内部健康接口需要内部token，不计入Java Actuator默认健康检查。
 
 ## 目录与基础能力
 
@@ -50,9 +49,9 @@ docs/jiekou.md                业务接口契约
 - 数据库 ID 默认 ASSIGN_ID；业务响应对象将 ID 转为字符串。实体含 `deleted` 时启用逻辑删除约定，建表需定义默认值 0。
 - `PasswordEncoder` 使用 BCrypt；认证采用服务端 Session + MVC 拦截器，密码哈希不会返回前端。
 - `RestTemplate` Bean 名为 `aiRestTemplate`，默认访问 `http://127.0.0.1:7999`，连接超时 3 秒、读取超时 180 秒；配置 `AI_INTERNAL_TOKEN` 后自动附加内部认证头。已有请求上下文时转发 `X-Request-Id`。
-- 使用 `@Async("aiExecutor")` 提交 AI 工作，有界队列 50、线程 2～4。队列满会拒绝任务，后续业务需处理拒绝并记录失败；本阶段线程池不提供持久化、重启恢复或事务提交后调度。
-- 文件目录通过 `app.storage.root` 配置，默认 `${user.dir}/uploads`。后续上传服务负责校验文件、创建子目录和授权下载；没有将目录公开映射为静态资源。
-- Session 30 分钟空闲过期，Cookie HttpOnly/SameSite=Lax。登录、验证码、锁定、角色校验与 CSRF 已实现；文件接口和招聘业务 CRUD 尚未实现。
+- BackgroundJobs每2秒领取MySQL中的任务，解析/生成/索引三个调度线程独立执行；网络调用不持有数据库事务。重启恢复PENDING，10分钟超时PROCESSING转FAILED或重试。app.jobs.enabled=false可暂停后台调度。
+- 文件目录通过 `app.storage.root` 配置，默认 `${user.dir}/uploads`。FileStorageService校验PDF页数/签名/加密及真实图片类型，创建随机路径并授权下载；没有将目录公开映射为静态资源。
+- Session 30 分钟空闲过期，Cookie HttpOnly/SameSite=Lax。登录、验证码、锁定、角色校验与 CSRF 已实现；文件、职位、简历、投递、AI任务、人才检索及审核CRUD已实现。
 
 ## 测试
 
@@ -99,3 +98,20 @@ docs/jiekou.md                业务接口契约
 普通测试使用H2和隔离的Redis替身；运行 `./mvnw -Dauth.redis.tests=true test` 可额外验证本机Redis1号库，只操作随机测试键。生产代码无演示账号或验证码后门。系统ping仍被前端首页调用，属于实际健康探测功能。
 
 拦截器独立放在 `interceptor/AuthInterceptor.java`；`config/AuthWebConfig.java` 仅注册 `/api/**` 的拦截范围。
+
+
+## 招聘业务与Redis
+
+- Controller只负责输入验证和HTTP响应；JobService、ProfileService、ResumeService、ApplicationService、AiTaskService和TalentService负责权限、归属、状态变更与事务。
+- BusinessRedis使用StringRedisTemplate及Lua实现原子限流、SET NX防重及带token释放锁。只缓存公开职位详情120秒；业务数据与任务状态由MySQL持久化。
+- VectorSyncService通过vector_sync_task同步Python Chroma，有限重试；人才发现权限始终以MySQL白名单为准。
+- BaseEntity和CreatedEntity的创建/更新时间使用@TableField自动填充，审计和评分只包含创建时间列。
+- 未增加演示账号、假简历或假AI结果，原system/ping示例已移除。
+
+执行真实依赖测试（只使用随机测试Redis键和随机临时MySQL库，不清空业务库）：
+
+```powershell
+.\mvnw.cmd '-Dauth.redis.tests=true' '-Drecruitment.mysql.tests=true' test
+```
+
+MySQL测试从被忽略的application-local.yml读取本机连接凭据；Python在自动化测试中使用受控替身，避免消耗模型额度。常规test使用H2和隔离的外部服务。真实SQL来自docs/init.sql。
