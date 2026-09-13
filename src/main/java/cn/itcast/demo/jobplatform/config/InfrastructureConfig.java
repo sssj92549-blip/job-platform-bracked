@@ -5,12 +5,13 @@ import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.context.annotation.Bean;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.DefaultUriBuilderFactory;
 
 import java.time.Duration;
 
@@ -40,20 +41,28 @@ public class InfrastructureConfig {
     }
 
     @Bean
-    public RestTemplate aiRestTemplate(RestTemplateBuilder builder,
+    public RestTemplate aiRestTemplate(
             @Value("${app.ai.base-url}") String baseUrl,
             @Value("${app.ai.internal-token}") String token,
             @Value("${app.ai.connect-timeout}") Duration connectTimeout,
             @Value("${app.ai.read-timeout}") Duration readTimeout) {
-        return builder.rootUri(baseUrl).connectTimeout(connectTimeout).readTimeout(readTimeout)
-                .additionalInterceptors((request, body, execution) -> {
-                    if (!token.isBlank()) {
-                        request.getHeaders().set("X-Internal-Token", token);
-                    }
-                    String requestId = org.slf4j.MDC.get("requestId");
-                    request.getHeaders().set("X-Request-Id", requestId==null?java.util.UUID.randomUUID().toString():requestId);
-                    return execution.execute(request, body);
-                }).build();
+        // 默认的 JdkClientHttpRequestFactory(java.net.http.HttpClient) 会对 http:// 目标发起
+        // h2c(HTTP/2 明文)升级，而 uvicorn 仅支持 HTTP/1.1，会导致请求被拒(400)。
+        // 这里显式使用 HTTP/1.1 的 SimpleClientHttpRequestFactory 避免升级。
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(connectTimeout);
+        factory.setReadTimeout(readTimeout);
+        RestTemplate rest = new RestTemplate(factory);
+        rest.setUriTemplateHandler(new DefaultUriBuilderFactory(baseUrl));
+        rest.getInterceptors().add((request, body, execution) -> {
+            if (!token.isBlank()) {
+                request.getHeaders().set("X-Internal-Token", token);
+            }
+            String requestId = org.slf4j.MDC.get("requestId");
+            request.getHeaders().set("X-Request-Id", requestId == null ? java.util.UUID.randomUUID().toString() : requestId);
+            return execution.execute(request, body);
+        });
+        return rest;
     }
 
 }

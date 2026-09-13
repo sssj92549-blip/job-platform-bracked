@@ -8,6 +8,10 @@ public class JobPlatformApplication {
 
     public static void main(String[] args) {
         SpringApplication.run(JobPlatformApplication.class, args);
+        System.out.println("---------------------\n" +
+                "       启动成功        \n" +
+                "---------------------"
+        );
     }
 
 }
