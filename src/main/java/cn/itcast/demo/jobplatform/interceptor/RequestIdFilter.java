@@ -1,4 +1,4 @@
-package cn.itcast.demo.jobplatform.common;
+package cn.itcast.demo.jobplatform.interceptor;
 
 import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.UUID;
 
+/** 请求追踪过滤器：为每个请求生成唯一ID，写入MDC并回写到响应头。 */
 @Component
 public class RequestIdFilter extends OncePerRequestFilter {
     @Override

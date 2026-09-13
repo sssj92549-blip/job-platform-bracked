@@ -62,7 +62,7 @@ app:
   storage:
     root: ${UPLOAD_ROOT:${user.dir}/uploads}
   ai:
-    base-url: ${AI_BASE_URL:http://127.0.0.1:8000}
+    base-url: ${AI_BASE_URL:http://127.0.0.1:7999}
     internal-token: ${AI_INTERNAL_TOKEN:}
     connect-timeout: 3s
     read-timeout: 180s
