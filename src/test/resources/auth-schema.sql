@@ -1,0 +1,39 @@
+CREATE TABLE IF NOT EXISTS account (
+  id BIGINT NOT NULL,
+  phone VARCHAR(11) NOT NULL,
+  username VARCHAR(32) NOT NULL,
+  password_hash VARCHAR(100) NOT NULL,
+  enabled TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  CONSTRAINT uk_account_phone UNIQUE (phone),
+  CONSTRAINT uk_account_username UNIQUE (username),
+  CONSTRAINT ck_account_enabled CHECK (enabled IN (0,1))
+);
+
+CREATE TABLE IF NOT EXISTS profile (
+  id BIGINT NOT NULL,
+  account_id BIGINT NOT NULL,
+  role ENUM('JOB_SEEKER','COMPANY','ADMIN') NOT NULL,
+  name VARCHAR(50) NULL,
+  education ENUM('HIGH_SCHOOL','JUNIOR_COLLEGE','BACHELOR','MASTER','DOCTOR','OTHER') NULL,
+  avatar_path VARCHAR(255) NULL,
+  city VARCHAR(50) NULL,
+  introduction VARCHAR(2000) NULL,
+  discoverable TINYINT NOT NULL DEFAULT 0,
+  company_name VARCHAR(100) NULL,
+  industry VARCHAR(100) NULL,
+  company_description VARCHAR(2000) NULL,
+  review_status ENUM('PENDING','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING',
+  review_reason VARCHAR(500) NULL,
+  enabled TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  CONSTRAINT uk_profile_account_role UNIQUE (account_id,role),
+  CONSTRAINT fk_profile_account FOREIGN KEY (account_id) REFERENCES account(id),
+  CONSTRAINT ck_profile_flags CHECK (enabled IN (0,1) AND discoverable IN (0,1)),
+  CONSTRAINT ck_profile_discovery CHECK (role='JOB_SEEKER' OR discoverable=0),
+  CONSTRAINT ck_profile_company CHECK (role<>'COMPANY' OR (company_name IS NOT NULL AND CHAR_LENGTH(TRIM(company_name)) BETWEEN 2 AND 100))
+);
