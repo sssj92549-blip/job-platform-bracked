@@ -35,6 +35,8 @@ public class JobController {
     public ResponseEntity<?> submitReview(@PathVariable Long id,HttpServletRequest request) { return ResponseEntity.status(200).body(ApiResponse.success(service.transition(id,"SUBMIT",null,null,request))); }
     @PostMapping("/api/company/jobs/{id}/close")
     public ResponseEntity<?> closeJob(@PathVariable Long id,HttpServletRequest request) { return ResponseEntity.status(200).body(ApiResponse.success(service.transition(id,"CLOSE",null,null,request))); }
+    @PostMapping("/api/company/jobs/{id}/index-retry")
+    public ResponseEntity<?> retryIndex(@PathVariable Long id,HttpServletRequest request) { return ResponseEntity.accepted().body(ApiResponse.success(service.retryIndex(id,request))); }
     @DeleteMapping("/api/company/jobs/{id}")
     public ResponseEntity<?> deleteJob(@PathVariable Long id,HttpServletRequest request) { return ResponseEntity.status(200).body(ApiResponse.success(service.delete(id,request))); }
     @GetMapping("/api/admin/jobs")

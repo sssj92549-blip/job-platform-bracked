@@ -174,3 +174,23 @@ CREATE TABLE IF NOT EXISTS vector_sync_task (
 ALTER TABLE resume ADD COLUMN parsed_birth_date DATE;
 ALTER TABLE resume ADD COLUMN parsed_age INT;
 ALTER TABLE resume ADD COLUMN parsed_work_experience_years INT;
+
+
+-- 职位向量生命周期：事务出站队列，版本快照及有限重试。
+CREATE TABLE IF NOT EXISTS job_vector_task (
+ id BIGINT AUTO_INCREMENT PRIMARY KEY,
+ job_id BIGINT NOT NULL,
+ job_version INT NOT NULL,
+ operation VARCHAR(10) NOT NULL,
+ status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+ payload LONGTEXT NULL,
+ attempts INT NOT NULL DEFAULT 0,
+ next_attempt_at DATETIME(3) NOT NULL,
+ started_at DATETIME(3) NULL,
+ completed_at DATETIME(3) NULL,
+ error_message VARCHAR(1000) NULL,
+ created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+ KEY idx_job_vector_pending(status,next_attempt_at),
+ KEY idx_job_vector_order(job_id,id),
+ CONSTRAINT fk_job_vector_job FOREIGN KEY (job_id) REFERENCES job(id)
+);

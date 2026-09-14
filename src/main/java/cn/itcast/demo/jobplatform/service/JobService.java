@@ -17,14 +17,15 @@ import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
 @Service
 public class JobService {
     private final JobMapper jobs;
+    private final JobVectorService vectors;
     private final ProfileRepository profiles;
     private final ApplicationMapper applications;
     private final BusinessSupport b;
     private final BusinessRedis redis;
     private final AuditService audit;
     private static final String PUBLIC_COMPANIES="select p.id from profile_details p join account a on a.id=p.account_id where p.role='COMPANY' and p.enabled=1 and a.enabled=1 and p.review_status='APPROVED'";
-    public JobService(JobMapper jobs,ProfileRepository profiles,ApplicationMapper applications,BusinessSupport b,BusinessRedis redis,AuditService audit) {
-        this.jobs=jobs; this.profiles=profiles; this.applications=applications; this.b=b; this.redis=redis; this.audit=audit;
+    public JobService(JobVectorService vectors,JobMapper jobs,ProfileRepository profiles,ApplicationMapper applications,BusinessSupport b,BusinessRedis redis,AuditService audit) {
+        this.vectors=vectors; this.jobs=jobs; this.profiles=profiles; this.applications=applications; this.b=b; this.redis=redis; this.audit=audit;
     }
     public Job require(Long id,boolean lock) {
         Job j=jobs.selectOne(new QueryWrapper<Job>().eq("id",id).last(lock?"FOR UPDATE":""));
@@ -41,7 +42,8 @@ public class JobService {
     public ObjectNode view(Job j,boolean publicView) {
         ObjectNode out=b.view(j,"deleted"); out.set("skills",b.read(j.getSkills()));
         companyFields(out,profiles.selectById(j.getCompanyId()));
-        if(publicView) out.putNull("reviewReason"); return out;
+        if(publicView) out.putNull("reviewReason");
+        else { var index=vectors.latest(j.getId()); out.put("indexStatus",index.isEmpty()?"NOT_READY":String.valueOf(index.get("status"))); out.put("indexError",(String)index.get("error_message")); } return out;
     }
     /** 缓存只存职位展示；先查实时状态，企业名称也实时更新，禁止返回已下架缓存。 */
     public ObjectNode detail(Long id) {
@@ -69,7 +71,7 @@ public class JobService {
             if(q.containsKey("status")&&!q.get("status").isBlank()) w.eq("status",q.get("status"));
         }
         String keyword=trim(q.get("keyword"));
-        if(keyword!=null && !keyword.isEmpty()) w.and(n->n.like("title",keyword).or().apply("company_id in (select id from profile_details where company_name like {0})","%"+keyword+"%"));
+        if(!"PUBLIC".equals(scope) && keyword!=null && !keyword.isEmpty()) w.and(n->n.like("title",keyword).or().apply("company_id in (select id from profile_details where company_name like {0})","%"+keyword+"%"));
         if(q.containsKey("city")&&!q.get("city").isBlank()) w.eq("city",q.get("city"));
         if(q.containsKey("education")&&!q.get("education").isBlank()) w.eq("education_requirement",q.get("education"));
         if(q.containsKey("industry")&&!q.get("industry").isBlank()) {
@@ -92,8 +94,31 @@ public class JobService {
         if(q.containsKey("salaryMin")) w.ge("salary_max",number(q,"salaryMin",0,0,1000000));
         if(q.containsKey("salaryMax")) w.le("salary_min",number(q,"salaryMax",0,0,1000000));
         if(q.containsKey("salaryMin")&&q.containsKey("salaryMax") && Integer.parseInt(q.get("salaryMin"))>Integer.parseInt(q.get("salaryMax"))) bad("薪资下限不能大于上限");
+        if("PUBLIC".equals(scope)&&keyword!=null&&!keyword.isBlank()) return hybrid(q,w,keyword);
         Page<Job> page=jobs.selectPage(new Page<>(page(q),size(q)),w.orderByDesc("created_at","id"));
         return new PageResult<>(page.getRecords().stream().map(j->view(j,"PUBLIC".equals(scope))).toList(),page.getTotal(),page.getCurrent(),page.getSize());
+    }
+    /** 先应用业务筛选，再融合字面与向量命中；最后复查状态并分页。 */
+    private PageResult<ObjectNode> hybrid(Map<String,String> q,QueryWrapper<Job> w,String keyword) {
+        if(keyword.length()>200) bad("搜索词最多200字");
+        List<Job> eligible=jobs.selectList(w.clone().orderByDesc("created_at","id").last("LIMIT 10001"));
+        if(eligible.size()>10000) state("请先按城市或行业缩小搜索范围");
+        Map<Long,Double> scores=vectors.search(keyword,eligible); String needle=keyword.toLowerCase(Locale.ROOT);
+        for(Job j:eligible) {
+            Profile company=profiles.selectById(j.getCompanyId());
+            String title=j.getTitle().toLowerCase(Locale.ROOT);
+            String content=(j.getTitle()+" "+j.getDescription()+" "+j.getRequirements()+" "+j.getSkills()+" "+(company==null?"":company.getCompanyName())).toLowerCase(Locale.ROOT);
+            if(content.contains(needle)) scores.merge(j.getId(),title.equals(needle)?3.0:title.contains(needle)?2.0:1.0,Double::sum);
+        }
+        List<Job> current=jobs.selectList(w.clone());
+        current.removeIf(j->!scores.containsKey(j.getId())||eligible.stream().noneMatch(old->old.getId().equals(j.getId())&&old.getVersion().equals(j.getVersion())));
+        current.sort(Comparator.<Job>comparingDouble(j->scores.get(j.getId())).reversed().thenComparing(Job::getId,Comparator.reverseOrder()));
+        long start=(page(q)-1)*size(q);
+        return new PageResult<>(current.stream().skip(start).limit(size(q)).map(j->view(j,true)).toList(),current.size(),page(q),size(q));
+    }
+    @Transactional
+    public ObjectNode retryIndex(Long id,HttpServletRequest request) {
+        Job j=own(id,b.actor(request,"COMPANY"),true); vectors.retry(j); return view(j,false);
     }
     public ObjectNode managedDetail(Long id,String scope,HttpServletRequest request) {
         Profile p=b.actor(request,scope); return view("ADMIN".equals(scope)?require(id,false):own(id,p,false),false);
@@ -133,6 +158,7 @@ public class JobService {
         } else { if(!"APPROVED".equals(before)) state("仅已发布职位可关闭"); j.setStatus("CLOSED"); }
         j.setReviewReason(reason);
         jobs.update(j,new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<Job>().eq("id",id).set("review_reason",reason));
+        vectors.enqueue(j,!"APPROVED".equals(j.getStatus()));
         redis.evictJob(id,j.getVersion());
         audit.record(p.getId(),"JOB",id,action,reason,b.object("status",before),b.object("status",j.getStatus()));
         return view(j,false);
@@ -151,7 +177,7 @@ public class JobService {
     public ObjectNode delete(Long id,HttpServletRequest request) {
         Job j=own(id,b.actor(request,"COMPANY"),true);
         if(!Set.of("DRAFT","REJECTED").contains(j.getStatus()) || applications.selectCount(new QueryWrapper<Application>().eq("job_id",id))>0) state("该职位不能删除");
-        jobs.deleteById(id); redis.evictJob(id,j.getVersion()); return b.object();
+        vectors.enqueue(j,true); jobs.deleteById(id); redis.evictJob(id,j.getVersion()); return b.object();
     }
     /** 企业主页仅返回公开资料，绝不返回手机号、账号或审核原因。 */
     public ObjectNode company(Long id) {

@@ -44,6 +44,8 @@ class RecruitmentIntegrationTests {
     @Autowired AccountMapper accounts;
     @Autowired ProfileRepository profiles;
     @Autowired JobMapper jobs;
+    @Autowired JobVectorService jobVectors;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired ResumeMapper resumes;
     @Autowired ApplicationMapper applications;
     @Autowired AiTaskMapper tasks;
@@ -91,6 +93,30 @@ class RecruitmentIntegrationTests {
         send("PUT","/api/company/jobs/"+id,company,input).andExpect(status().isConflict());
         send("POST","/api/company/jobs/"+id+"/close",company,null).andExpect(status().isOk());
         mvc.perform(get("/api/jobs/"+id)).andExpect(status().isNotFound());
+    }
+    @Test void jobVectorLifecycleRetriesAndCloses() throws Exception {
+        Job j=job(); jobVectors.enqueue(j,false);
+        when(python.call(eq(HttpMethod.PUT),contains("/internal/vector/jobs/"),any())).thenReturn(json.readTree("{\"indexed\":true}"));
+        jobVectors.processOne(); assertThat(jobVectors.latest(j.getId()).get("status")).isEqualTo("SUCCESS");
+        send("POST","/api/company/jobs/"+j.getId()+"/close",company,null).andExpect(status().isOk());
+        when(python.call(eq(HttpMethod.DELETE),contains("/internal/vector/jobs/"),isNull())).thenReturn(json.readTree("{\"deleted\":true}"));
+        jobVectors.processOne(); assertThat(jobVectors.latest(j.getId()).get("operation")).isEqualTo("DELETE");
+        assertThat(jobVectors.latest(j.getId()).get("status")).isEqualTo("SUCCESS");
+        jdbc.update("UPDATE job_vector_task SET status='FAILED' WHERE id=?",jobVectors.latest(j.getId()).get("id"));
+        send("POST","/api/company/jobs/"+j.getId()+"/index-retry",other,null).andExpect(status().isNotFound());
+        send("POST","/api/company/jobs/"+j.getId()+"/index-retry",company,null).andExpect(status().isAccepted());
+        assertThat(jobVectors.latest(j.getId()).get("status")).isEqualTo("PENDING");
+    }
+    @Test void hybridSearchUsesSemanticMatchesAndRetainsFilters() throws Exception {
+        Job j=job(); j.setTitle("后端工程师"); j.setRequirements("熟悉事务与接口设计"); jobs.updateById(j);
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),any())).thenReturn(json.readTree("{\"matches\":[{\"jobId\":\""+j.getId()+"\",\"jobVersion\":1,\"similarity\":0.8},{\"jobId\":\"999\",\"jobVersion\":1,\"similarity\":1}]}"));
+        send("GET","/api/jobs?keyword=计算机",seeker,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        send("GET","/api/jobs?keyword=计算机&city=北京",seeker,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        j.setStatus("CLOSED"); jobs.updateById(j);
+        send("GET","/api/jobs?keyword=计算机",seeker,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        j.setStatus("APPROVED"); jobs.updateById(j);
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),any())).thenThrow(new RuntimeException("offline"));
+        send("GET","/api/jobs?keyword=后端",seeker,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
     }
     @Test void applicationAutomaticallyScoresOnceWithoutBlockingSubmission() throws Exception {
         Job j=job(); Resume r=resume();
