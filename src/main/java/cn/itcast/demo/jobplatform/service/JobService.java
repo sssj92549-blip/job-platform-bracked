@@ -60,7 +60,7 @@ public class JobService {
                 try { long companyId=Long.parseLong(q.get("companyId")); if(companyId<=0) throw new NumberFormatException(); w.eq("company_id",companyId); }
                 catch(NumberFormatException e) { bad("companyId须为有效ID"); }
             }
-            if(q.containsKey("status")) w.eq("status",q.get("status"));
+            if(q.containsKey("status")&&!q.get("status").isBlank()) w.eq("status",q.get("status"));
         }
         String keyword=trim(q.get("keyword"));
         if(keyword!=null && !keyword.isEmpty()) w.and(n->n.like("title",keyword).or().apply("company_id in (select id from profile where company_name like {0})","%"+keyword+"%"));
@@ -113,7 +113,11 @@ public class JobService {
         boolean admin=action.startsWith("ADMIN"); Profile p=b.actor(request,admin?"ADMIN":"COMPANY");
         Job j=admin?require(id,true):own(id,p,true); String before=j.getStatus();
         if(action.equals("SUBMIT")) {
-            if(!Set.of("DRAFT","REJECTED").contains(before)) state("当前职位不可提交审核"); j.setStatus("PENDING");
+            if(!Set.of("DRAFT","REJECTED","PENDING").contains(before)) state("当前职位不可发布");
+            Profile company=profiles.selectOne(new QueryWrapper<Profile>().eq("id",p.getId()).last("FOR UPDATE"));
+            if(!b.available(company)) state("企业审核通过后才能发布职位");
+            requireCompanyInfo(company);
+            j.setStatus("APPROVED"); j.setPublishedAt(now());
         } else if(action.equals("ADMIN_REVIEW")) {
             if(!"PENDING".equals(before)) state("仅待审核职位可审核");
             if("REJECTED".equals(review.decision()) && (review.reason()==null||review.reason().isBlank())) bad("拒绝时必须填写原因");
@@ -126,6 +130,16 @@ public class JobService {
         redis.evictJob(id,j.getVersion());
         audit.record(p.getId(),"JOB",id,action,reason,b.object("status",before),b.object("status",j.getStatus()));
         return view(j,false);
+    }
+    /** 发布前校验真实企业档案，防止绕过前端直接调用发布接口。 */
+    private void requireCompanyInfo(Profile p) {
+        List<String> missing=new ArrayList<>();
+        if(p.getCompanyName()==null||p.getCompanyName().trim().length()<2) missing.add("企业名称");
+        if(p.getIndustry()==null||p.getIndustry().isBlank()) missing.add("行业");
+        if(p.getCompanySize()==null||!Set.of("UNDER_20","20_99","100_499","500_999","1000_9999","10000_PLUS").contains(p.getCompanySize())) missing.add("公司规模");
+        if(p.getCity()==null||p.getCity().isBlank()) missing.add("所在城市");
+        if(p.getCompanyDescription()==null||p.getCompanyDescription().isBlank()) missing.add("公司简介");
+        if(!missing.isEmpty()) state("发布前请完善企业资料："+String.join("、",missing));
     }
     @Transactional
     public ObjectNode delete(Long id,HttpServletRequest request) {

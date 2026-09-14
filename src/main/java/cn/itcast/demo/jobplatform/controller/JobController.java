@@ -30,7 +30,8 @@ public class JobController {
     public ResponseEntity<?> createJob(@Valid @RequestBody JobInput input,HttpServletRequest request) { return ResponseEntity.status(201).body(ApiResponse.success(service.save(null,input,request))); }
     @PutMapping("/api/company/jobs/{id}")
     public ResponseEntity<?> updateJob(@PathVariable Long id,@Valid @RequestBody JobInput input,HttpServletRequest request) { return ResponseEntity.status(200).body(ApiResponse.success(service.save(id,input,request))); }
-    @PostMapping("/api/company/jobs/{id}/submit-review")
+    /** 直接发布职位；旧路径仅为已有客户端兼容保留。 */
+    @PostMapping({"/api/company/jobs/{id}/publish","/api/company/jobs/{id}/submit-review"})
     public ResponseEntity<?> submitReview(@PathVariable Long id,HttpServletRequest request) { return ResponseEntity.status(200).body(ApiResponse.success(service.transition(id,"SUBMIT",null,null,request))); }
     @PostMapping("/api/company/jobs/{id}/close")
     public ResponseEntity<?> closeJob(@PathVariable Long id,HttpServletRequest request) { return ResponseEntity.status(200).body(ApiResponse.success(service.transition(id,"CLOSE",null,null,request))); }

@@ -82,8 +82,10 @@ class RecruitmentIntegrationTests {
         String id=data(send("POST","/api/company/jobs",company,input).andExpect(status().isCreated())).path("id").asText();
         send("PUT","/api/company/jobs/"+id,other,input).andExpect(status().isNotFound());
         mvc.perform(get("/api/jobs/"+id)).andExpect(status().isNotFound());
-        send("POST","/api/company/jobs/"+id+"/submit-review",company,null).andExpect(status().isOk());
-        send("POST","/api/admin/jobs/"+id+"/review",admin,new Review("APPROVED",null)).andExpect(status().isOk());
+        send("POST","/api/company/jobs/"+id+"/publish",company,null).andExpect(status().isConflict());
+        company.setIndustry("互联网"); company.setCompanySize("100_499"); company.setCity("杭州"); company.setCompanyDescription("企业软件开发"); profiles.updateById(company);
+        send("POST","/api/company/jobs/"+id+"/publish",other,null).andExpect(status().isNotFound());
+        send("POST","/api/company/jobs/"+id+"/publish",company,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"));
         JsonNode publicJob=data(mvc.perform(get("/api/jobs/"+id)).andExpect(status().isOk()));
         when(redis.cachedJob(Long.valueOf(id),1)).thenReturn(publicJob.toString());
         send("PUT","/api/company/jobs/"+id,company,input).andExpect(status().isConflict());

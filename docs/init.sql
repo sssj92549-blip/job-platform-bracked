@@ -297,3 +297,15 @@ SET @resume_optional_ddl = IF((SELECT COUNT(*) FROM information_schema.columns W
 PREPARE resume_optional_migration FROM @resume_optional_ddl;
 EXECUTE resume_optional_migration;
 DEALLOCATE PREPARE resume_optional_migration;
+
+
+-- 补齐手机号13576200952的企业演示资料；只替换占位名称及空字段，不覆盖后续手工修改。
+UPDATE profile p JOIN account a ON a.id=p.account_id
+SET p.company_name=CASE WHEN p.company_name='111' THEN '杭州知遇信息科技有限公司' ELSE p.company_name END,
+    p.industry=COALESCE(NULLIF(TRIM(p.industry),''),'互联网'),
+    p.company_size=COALESCE(NULLIF(TRIM(p.company_size),''),'100_499'),
+    p.city=COALESCE(NULLIF(TRIM(p.city),''),'杭州'),
+    p.company_description=COALESCE(NULLIF(TRIM(p.company_description),''),'杭州知遇信息科技有限公司是一家面向企业数字化需求的软件研发与技术服务公司，主要开展企业管理系统、数据分析平台和人工智能应用的设计与开发。团队覆盖Java后端、Web前端、Python开发、软件测试及运维等技术方向，重视工程质量、团队协作和人才培养，为员工提供参与完整项目交付与持续学习的机会。'),
+    p.updated_at=CURRENT_TIMESTAMP
+WHERE a.phone='13576200952' AND p.id=2097628693383979010 AND p.role='COMPANY'
+  AND (p.company_name='111' OR NULLIF(TRIM(p.industry),'') IS NULL OR NULLIF(TRIM(p.company_size),'') IS NULL OR NULLIF(TRIM(p.city),'') IS NULL OR NULLIF(TRIM(p.company_description),'') IS NULL);
