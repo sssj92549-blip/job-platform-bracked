@@ -45,7 +45,7 @@ public class ResumeService {
     public ObjectNode view(Resume r) {
         if(r==null) return null;
         ObjectNode out=b.view(r,"candidateId","isCurrent","deleted","filePath","originalProfile","parseStartedAt");
-        for(String name:List.of("parsedSkills","conflicts","confirmedProfile")) out.set(name,b.read(out.path(name).isNull()?null:out.path(name).asText()));
+        for(String name:List.of("parsedSkills","conflicts","confirmedProfile","parsedWorkExperience","parsedInternshipExperience","parsedProjectExperience","parsedCampusExperience","parsedCertificates")) out.set(name,b.read(out.path(name).isNull()?null:out.path(name).asText()));
         if(out.path("parsedSkills").isNull()) out.putArray("parsedSkills"); if(out.path("conflicts").isNull()) out.putArray("conflicts");
         out.put("downloadUrl","/api/resumes/"+r.getId()+"/file"); return out;
     }
@@ -76,7 +76,19 @@ public class ResumeService {
         Profile p=b.actor(request,"JOB_SEEKER"); Resume r=own(id,p.getId(),true); version(r.getVersion().equals(input.expectedVersion()));
         if(!"SUCCESS".equals(r.getParseStatus())) state("解析成功后才可确认");
         vectors.enqueue(r,true); r.setVersion(r.getVersion()+1); r.setConfirmationStatus("CONFIRMED"); r.setConfirmedAt(now());
-        r.setConfirmedProfile(b.write(b.object("name",input.name().trim(),"contactPhone",input.contactPhone(),"education",input.education(),"skills",input.skills())));
+        ObjectNode confirmed=b.object("name",input.name().trim(),"contactPhone",input.contactPhone(),"education",input.education(),"skills",input.skills());
+        ObjectNode sections=optionalSections(r);
+        JsonNode previous=b.read(r.getConfirmedProfile()).path("optionalSections");
+        if(previous.isObject()) sections=(ObjectNode)previous.deepCopy();
+        if(input.optionalSections()!=null) {
+            for(var entry:input.optionalSections().entrySet()) {
+                if(!sections.has(entry.getKey())) bad("不支持的简历经历字段");
+                List<String> items=entry.getValue();
+                if(items!=null&&(items.size()>20||items.stream().anyMatch(v->v==null||v.isBlank()||v.length()>2000))) bad("每类经历最多20项，每项1至2000字");
+                sections.set(entry.getKey(),items==null||items.isEmpty()?NullNode.instance:b.json.valueToTree(items));
+            }
+        }
+        confirmed.set("optionalSections",sections); r.setConfirmedProfile(b.write(confirmed));
         r.setConflictStatus("RESOLVED"); resumes.updateById(r);
         Profile update=new Profile(); update.setId(p.getId()); update.setName(input.name().trim()); update.setEducation(input.education()); profiles.updateById(update);
         vectors.enqueue(r,false); return view(r);
@@ -88,7 +100,7 @@ public class ResumeService {
         if(!Set.of("SUCCESS","FAILED").contains(r.getParseStatus())) state("当前简历正在解析");
         vectors.enqueue(r,true); r.setVersion(r.getVersion()+1); r.setParseStatus("PENDING"); r.setConfirmationStatus("UNCONFIRMED"); r.setIndexStatus("NOT_READY"); r.setConflictStatus("NONE");
         UpdateWrapper<Resume> w=new UpdateWrapper<Resume>().eq("id",id);
-        for(String col:List.of("confirmed_profile","confirmed_at","parse_error","parse_started_at","parsed_name","parsed_phone","parsed_education","parsed_skills","parsed_summary","extracted_text","conflicts","index_error")) w.set(col,null);
+        for(String col:List.of("confirmed_profile","confirmed_at","parse_error","parse_started_at","parsed_name","parsed_phone","parsed_education","parsed_skills","parsed_summary","parsed_work_experience","parsed_internship_experience","parsed_project_experience","parsed_campus_experience","parsed_certificates","extracted_text","conflicts","index_error")) w.set(col,null);
         // Wrapper负责明确清空字段，实体负责更新状态和自动更新时间。
         Resume update=new Resume(); update.setVersion(r.getVersion()); update.setParseStatus("PENDING"); update.setConfirmationStatus("UNCONFIRMED"); update.setIndexStatus("NOT_READY"); update.setConflictStatus("NONE"); resumes.update(update,w);
         return accepted(r);
@@ -120,6 +132,11 @@ public class ResumeService {
                 if(fresh==null) return;
                 fresh.setParseStatus("SUCCESS"); fresh.setExtractedText(result.path("extractedText").asText()); fresh.setExtractionMethod(result.path("extractionMethod").asText()); fresh.setPageCount(result.path("pageCount").asInt());
                 fresh.setParsedName(text(result,"parsedName")); fresh.setParsedPhone(text(result,"parsedPhone")); fresh.setParsedEducation(text(result,"parsedEducation")); fresh.setParsedSummary(text(result,"parsedSummary")); fresh.setParsedSkills(result.path("parsedSkills").toString());
+                fresh.setParsedWorkExperience(optionalArray(result,"parsedWorkExperience"));
+                fresh.setParsedInternshipExperience(optionalArray(result,"parsedInternshipExperience"));
+                fresh.setParsedProjectExperience(optionalArray(result,"parsedProjectExperience"));
+                fresh.setParsedCampusExperience(optionalArray(result,"parsedCampusExperience"));
+                fresh.setParsedCertificates(optionalArray(result,"parsedCertificates"));
                 ArrayNode conflicts=b.json.createArrayNode(); JsonNode original=b.read(fresh.getOriginalProfile());
                 for(String field:List.of("name","phone","education")) {
                     String ai=text(result,"parsed"+Character.toUpperCase(field.charAt(0))+field.substring(1)); String user=text(original,field);
@@ -132,6 +149,18 @@ public class ResumeService {
             resumes.update(failed,new UpdateWrapper<Resume>().eq("id",r.getId()).eq("version",r.getVersion()).eq("parse_status","PROCESSING"));
         }
     }
+    /** 可选经历按数组存储；兼容旧AI服务缺少字段，统一返回NULL。 */
+    private static String optionalArray(JsonNode result,String field) {
+        JsonNode value=result.path(field);
+        if(value.isMissingNode()||value.isNull()) return null;
+        if(!value.isArray()||value.size()>20) PythonAiClient.invalid();
+        for(JsonNode item:value) if(!item.isTextual()||item.asText().isBlank()||item.asText().length()>2000) PythonAiClient.invalid();
+        return value.isEmpty()?null:value.toString();
+    }
+    /** 供投递快照复用的五类可选解析信息。 */
+    public ObjectNode optionalSections(Resume r) {
+        return b.object("parsedWorkExperience",b.read(r.getParsedWorkExperience()),"parsedInternshipExperience",b.read(r.getParsedInternshipExperience()),"parsedProjectExperience",b.read(r.getParsedProjectExperience()),"parsedCampusExperience",b.read(r.getParsedCampusExperience()),"parsedCertificates",b.read(r.getParsedCertificates()));
+    }
     private static String text(JsonNode n,String key) { return n.hasNonNull(key)?n.path(key).asText():null; }
     private static void validateParse(Resume r,JsonNode result) {
         if(!result.path("resumeId").asText().equals(r.getId().toString())||!result.path("resumeVersion").isIntegralNumber()||result.path("resumeVersion").asInt()!=r.getVersion()
@@ -142,6 +171,7 @@ public class ResumeService {
         for(var field:Map.of("parsedName",50,"parsedPhone",32,"parsedSummary",2000).entrySet()) {
             JsonNode value=result.path(field.getKey()); if(value.isMissingNode()||(!value.isNull()&&(!value.isTextual()||value.asText().length()>field.getValue()))) PythonAiClient.invalid();
         }
+        for(String field:List.of("parsedWorkExperience","parsedInternshipExperience","parsedProjectExperience","parsedCampusExperience","parsedCertificates")) optionalArray(result,field);
         JsonNode education=result.path("parsedEducation");
         if(education.isMissingNode()||(!education.isNull()&&!Set.of("HIGH_SCHOOL","JUNIOR_COLLEGE","BACHELOR","MASTER","DOCTOR","OTHER").contains(education.asText()))) PythonAiClient.invalid();
     }

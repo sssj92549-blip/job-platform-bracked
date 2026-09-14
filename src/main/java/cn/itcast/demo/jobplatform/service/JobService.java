@@ -40,14 +40,14 @@ public class JobService {
     }
     public ObjectNode view(Job j,boolean publicView) {
         ObjectNode out=b.view(j,"deleted"); out.set("skills",b.read(j.getSkills()));
-        Profile company=profiles.selectById(j.getCompanyId()); out.put("companyName",company==null?null:company.getCompanyName());
+        companyFields(out,profiles.selectById(j.getCompanyId()));
         if(publicView) out.putNull("reviewReason"); return out;
     }
     /** 缓存只存职位展示；先查实时状态，企业名称也实时更新，禁止返回已下架缓存。 */
     public ObjectNode detail(Long id) {
         Job j=publicJob(id); String cached=redis.cachedJob(id,j.getVersion());
         ObjectNode out=cached==null?view(j,true):(ObjectNode)b.read(cached);
-        out.put("companyName",profiles.selectById(j.getCompanyId()).getCompanyName());
+        companyFields(out,profiles.selectById(j.getCompanyId()));
         if(cached==null) redis.cacheJob(id,j.getVersion(),b.write(out)); return out;
     }
     public PageResult<ObjectNode> list(Map<String,String> q,String scope,HttpServletRequest request) {
@@ -66,6 +66,23 @@ public class JobService {
         if(keyword!=null && !keyword.isEmpty()) w.and(n->n.like("title",keyword).or().apply("company_id in (select id from profile where company_name like {0})","%"+keyword+"%"));
         if(q.containsKey("city")&&!q.get("city").isBlank()) w.eq("city",q.get("city"));
         if(q.containsKey("education")&&!q.get("education").isBlank()) w.eq("education_requirement",q.get("education"));
+        if(q.containsKey("industry")&&!q.get("industry").isBlank()) {
+            if(q.get("industry").length()>100) bad("行业筛选最多100字");
+            w.apply("company_id in (select id from profile where industry like {0})","%"+q.get("industry").trim()+"%");
+        }
+        if(q.containsKey("companySize")&&!q.get("companySize").isBlank()) {
+            if(!Set.of("UNDER_20","20_99","100_499","500_999","1000_9999","10000_PLUS").contains(q.get("companySize"))) bad("公司规模无效");
+            w.apply("company_id in (select id from profile where company_size={0})",q.get("companySize"));
+        }
+        if(q.containsKey("experience")&&!q.get("experience").isBlank()) {
+            switch(q.get("experience")) {
+                case "ENTRY" -> w.eq("experience_min_years",0);
+                case "1_3" -> w.between("experience_min_years",1,3);
+                case "3_5" -> w.gt("experience_min_years",3).le("experience_min_years",5);
+                case "5_PLUS" -> w.gt("experience_min_years",5);
+                default -> bad("工作经验筛选无效");
+            }
+        }
         if(q.containsKey("salaryMin")) w.ge("salary_max",number(q,"salaryMin",0,0,1000000));
         if(q.containsKey("salaryMax")) w.le("salary_min",number(q,"salaryMax",0,0,1000000));
         if(q.containsKey("salaryMin")&&q.containsKey("salaryMax") && Integer.parseInt(q.get("salaryMin"))>Integer.parseInt(q.get("salaryMax"))) bad("薪资下限不能大于上限");
@@ -119,6 +136,13 @@ public class JobService {
     /** 企业主页仅返回公开资料，绝不返回手机号、账号或审核原因。 */
     public ObjectNode company(Long id) {
         Profile p=profiles.selectById(id); if(p==null||!"COMPANY".equals(p.getRole())||!b.available(p)) missing();
-        return b.object("id",id.toString(),"companyName",p.getCompanyName(),"industry",p.getIndustry(),"city",p.getCity(),"companyDescription",p.getCompanyDescription(),"avatarUrl",p.getAvatarPath()==null?null:"/api/users/"+id+"/avatar");
+        return b.object("id",id.toString(),"companyName",p.getCompanyName(),"industry",p.getIndustry(),"companySize",p.getCompanySize(),"city",p.getCity(),"companyDescription",p.getCompanyDescription(),"avatarUrl",p.getAvatarPath()==null?null:"/api/users/"+id+"/avatar");
+    }
+    /** 公司展示字段实时补充，避免Redis职位缓存保留旧企业资料。 */
+    private void companyFields(ObjectNode out,Profile p) {
+        out.put("companyName",p==null?null:p.getCompanyName());
+        out.put("companyIndustry",p==null?null:p.getIndustry());
+        out.put("companySize",p==null?null:p.getCompanySize());
+        out.put("companyAvatarUrl",p==null||p.getAvatarPath()==null?null:"/api/users/"+p.getId()+"/avatar");
     }
 }

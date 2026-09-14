@@ -3,6 +3,10 @@ import com.baomidou.mybatisplus.annotation.TableName;
 /** 角色档案，同一账号每种角色最多一个。 */
 @TableName("profile")
 public class Profile extends BaseEntity {
+    /** 企业人数规模；为空表示尚未填写，不推测企业信息。 */
+    private String companySize;
+    public String getCompanySize() { return companySize; }
+    public void setCompanySize(String value) { companySize=value; }
     /** 所属登录账号。 */
     private Long accountId;
     public Long getAccountId() { return accountId; }
@@ -60,4 +64,3 @@ public class Profile extends BaseEntity {
     public Boolean getEnabled() { return enabled; }
     public void setEnabled(Boolean value) { this.enabled = value; }
 }
-

@@ -45,7 +45,7 @@ public class ProfileService {
     public AuthViews.User company(Company input,HttpServletRequest request) {
         if(input.companyName().trim().length()<2) bad("企业名称至少2个字");
         Profile p=b.actor(request,"COMPANY"); Profile update=new Profile(); update.setCompanyName(input.companyName().trim()); update.setReviewStatus("PENDING");
-        profiles.update(update,new UpdateWrapper<Profile>().eq("id",p.getId()).set("industry",trim(input.industry())).set("city",trim(input.city())).set("company_description",trim(input.companyDescription())).set("review_reason",null));
+        profiles.update(update,new UpdateWrapper<Profile>().eq("id",p.getId()).set("industry",trim(input.industry())).set("company_size",input.companySize()).set("city",trim(input.city())).set("company_description",trim(input.companyDescription())).set("review_reason",null));
         return view(profiles.selectById(p.getId()));
     }
     @Transactional

@@ -18,13 +18,16 @@ public final class RecruitmentRequests {
         @NotNull @Pattern(regexp=EDUCATION) String education,
         @Size(max=50) String city, @Size(max=2000) String introduction) {}
     public record Company(@NotBlank @Size(min=2,max=100) String companyName,
-        @Size(max=100) String industry, @Size(max=50) String city, @Size(max=2000) String companyDescription) {}
+        @Size(max=100) String industry, @Size(max=50) String city, @Size(max=2000) String companyDescription,
+        @Pattern(regexp="UNDER_20|20_99|100_499|500_999|1000_9999|10000_PLUS") String companySize) {}
     public record Discoverability(@NotNull Boolean discoverable) {}
     public record Version(@NotNull @Min(1) Integer expectedVersion) {}
     public record Confirm(@NotNull @Min(1) Integer expectedVersion,
         @NotBlank @Size(max=50) String name, @NotBlank @Pattern(regexp="1[3-9][0-9]{9}") String contactPhone,
         @NotNull @Pattern(regexp=EDUCATION) String education,
-        @NotNull @Size(max=50) List<@NotBlank @Size(max=100) String> skills) {}
+        @NotNull @Size(max=50) List<@NotBlank @Size(max=100) String> skills, java.util.Map<String,List<String>> optionalSections) {
+        public Confirm(Integer expectedVersion,String name,String contactPhone,String education,List<String> skills) { this(expectedVersion,name,contactPhone,education,skills,null); }
+    }
     public record Apply(@NotNull @Positive Long jobId, @NotNull @Positive Long resumeId,
         @NotNull @Min(1) Integer resumeVersion) {}
     public record ApplicationStatus(@NotNull @Pattern(regexp="VIEWED|SHORTLISTED|REJECTED") String status) {}

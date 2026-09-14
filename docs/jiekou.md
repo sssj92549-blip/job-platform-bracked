@@ -1,6 +1,6 @@
 # 招聘系统接口文档
 
-版本：1.2（Spring Boot 3 / 三端业务及 Redis 实现）
+版本：1.3（职位卡片、企业规模与筛选）
 适用项目：Spring Boot 3.5.16 + Java 17 + MyBatis-Plus 3.5.17 + MySQL / Python 3.10 + FastAPI + PaddleOCR + 大模型 API + Chroma。  
 说明：认证、多身份、个人资料、职位、简历、投递、AI异步任务、人才检索与用户/职位审核接口已实现。Java通过RestTemplate调用Python，Redis用于限流、短期防重及职位详情缓存；业务状态持久化在MySQL。本文同步至桌面jiekou.md和前端docs/backend-api.md。实现范围以本文接口清单为准。
 
@@ -117,7 +117,7 @@ Java 和 Python 的 JSON 接口均返回此信封；下文“输出”描述的�
   "id": "1001", "accountId": "501", "username": "zhangsan", "phone": "13800138000", "role": "JOB_SEEKER",
   "name": "张三", "education": "BACHELOR", "avatarUrl": null,
   "city": "杭州", "introduction": null, "discoverable": false,
-  "companyName": null, "industry": null, "companyDescription": null,
+  "companyName": null, "industry": null, "companySize": null, "companyDescription": null,
   "reviewStatus": "APPROVED", "reviewReason": null, "enabled": true,
   "createdAt": "2026-09-09T14:30:00+08:00"
 }
@@ -130,6 +130,7 @@ Java 和 Python 的 JSON 接口均返回此信封；下文“输出”描述的�
 ```json
 {
   "id": "2001", "companyId": "1002", "companyName": "示例科技",
+  "companyIndustry": "软件服务", "companySize": "100_499", "companyAvatarUrl": null,
   "title": "Java开发工程师", "city": "杭州",
   "salaryMin": 8000, "salaryMax": 15000,
   "educationRequirement": "BACHELOR", "experienceMinYears": 0,
@@ -222,7 +223,7 @@ Java 和 Python 的 JSON 接口均返回此信封；下文“输出”描述的�
 | POST | `/api/auth/profiles` | 已登录 | `{role, companyName?}` | HTTP 201，ProfileOption，不自动切换 |
 | GET | `/api/users/me` | 已登录 | 无 | `User` |
 | PUT | `/api/users/me/profile` | 求职者 | `{name, education, city?, introduction?}` | `User` |
-| PUT | `/api/company/profile` | 企业（待审也可） | `{companyName, industry?, city?, companyDescription?}` | `User` |
+| PUT | `/api/company/profile` | 企业（待审也可） | `{companyName, industry?, companySize?, city?, companyDescription?}` | `User` |
 | POST | `/api/company/profile/submit-review` | 企业 | 无 | `{reviewStatus: "PENDING"}` |
 | PATCH | `/api/users/me/discoverability` | 求职者 | `{discoverable: boolean}` | `{discoverable: boolean, indexStatus: string}` |
 | POST | `/api/users/me/avatar` | 已登录 | multipart：`file`（JPEG/PNG，≤2MB） | `{avatarUrl: string}` |
@@ -244,9 +245,9 @@ Java 和 Python 的 JSON 接口均返回此信封；下文“输出”描述的�
 
 | 方法 | 请求路径 | 权限 | 输入 | 输出 data |
 |---|---|---|---|---|
-| GET | `/api/jobs` | 公开 | query：`page?, size?, keyword?, city?, education?, salaryMin?, salaryMax?` | `Page<Job>`，仅启用且审核通过企业的 APPROVED 职位 |
+| GET | `/api/jobs` | 公开 | query：`page?, size?, keyword?, city?, education?, salaryMin?, salaryMax?, experience?, industry?, companySize?` | `Page<Job>`，仅启用且审核通过企业的 APPROVED 职位 |
 | GET | `/api/jobs/{jobId}` | 公开 | path：jobId | `Job`，非公开职位返回 404 |
-| GET | `/api/companies/{companyId}` | 公开 | path：companyId | `{id, companyName, industry, city, companyDescription, avatarUrl}`，仅启用且已审核企业；不返回联系方式 |
+| GET | `/api/companies/{companyId}` | 公开 | path：companyId | `{id, companyName, industry, companySize, city, companyDescription, avatarUrl}`，仅启用且已审核企业；不返回联系方式 |
 | POST | `/api/company/jobs` | 企业 | body：JobInput | HTTP 201，`Job`，状态 DRAFT |
 | GET | `/api/company/jobs` | 企业 | query：`page?, size?, status?, keyword?` | `Page<Job>`，仅自己的职位 |
 | GET | `/api/company/jobs/{jobId}` | 企业 | path：jobId | `Job`，仅自己的职位，可看非公开状态 |
@@ -679,3 +680,63 @@ Redis连接沿用spring.data.redis，本地127.0.0.1:6379、1号库、无密码�
 解析文本和确认资料组合后若超过60000字，返回可读错误，请精简简历，不静默截断。Java对AI评分、面试题数量和字段长度做第二次结构校验。
 
 已删除框架示例`/api/system/ping`，依赖健康检查使用`/actuator/health`。当前实现没有引入JWT，继续采用Session、CSRF和AuthInterceptor；所有请求路径均不带版本段。
+
+
+## 16. 职位发现与企业规模
+
+求职者登录后默认进入 `/jobs`：顶部搜索、横向筛选、双列职位卡片；点击卡片进入 `/jobs/{id}` 展示完整详情。求职者端取消左侧导航，右上角“个人中心”提供简历、投递、AI工具、个人资料和账号身份入口。企业和管理员保留各自工作台。
+
+企业档案仍存profile表，新增可空company_size字段，不另建重复的公司表。行业复用industry，公司标识图复用avatar_path。企业资料PUT接口允许companySize；不填或null清空，非枚举值返回40001。资料修改仍需重新审核。
+
+规模取值：UNDER_20（20人以下）、20_99（20–99人）、100_499（100–499人）、500_999（500–999人）、1000_9999（1000–9999人）、10000_PLUS（10000人以上）。
+
+GET /api/jobs新增筛选参数：
+- industry：按企业行业包含匹配，最多100字。
+- companySize：按上述规模枚举精确匹配。
+- experience：按职位最低经验年数筛选，ENTRY=0，1_3=1至3，3_5=大于3且不超过5，5_PLUS=大于5。不传则不限。
+
+所有筛选同时生效。职位响应新增companyIndustry、companySize、companyAvatarUrl；未填写返回null，前端展示“行业未填写”“规模未填写”，没有头像时用公司名称首字占位。缓存命中时也重新读取企业展示信息。
+
+数据库升级SQL已写入docs/init.sql末尾，通过information_schema检查后仅添加缺失列；本机已执行升级，无需再次导入整份初始化脚本。
+
+
+## 17. 简历动态可选字段
+
+简历解析在基础姓名、联系方式、学历、技能和摘要之外，返回以下五个字段。数据库在 `resume` 表中使用可空 JSON 列，每个非空字段是字符串数组，每项对应一条经历或证书（最多20项，每项最多2000字）。没有对应内容则返回 `null`，模型不得编造经历或填充“暂无”等占位文字。
+
+| 返回字段 | 数据库字段 | 内容 |
+| --- | --- | --- |
+| parsedWorkExperience | parsed_work_experience | 工作经历 |
+| parsedInternshipExperience | parsed_internship_experience | 实习经历 |
+| parsedProjectExperience | parsed_project_experience | 项目经历 |
+| parsedCampusExperience | parsed_campus_experience | 校园经历 |
+| parsedCertificates | parsed_certificates | 证书 |
+
+新增返回片段示例（合并在原简历对象中）：
+
+```json
+{
+  "parsedWorkExperience": null,
+  "parsedInternshipExperience": null,
+  "parsedProjectExperience": ["招聘平台：负责 Spring Boot 接口开发，实现简历上传与投递功能。"],
+  "parsedCampusExperience": null,
+  "parsedCertificates": ["大学英语六级"]
+}
+```
+
+适用接口：Python `POST /internal/resumes/parse`，Java 获取当前简历与简历详情接口。Java 负责校验、入库和JSON序列化，Python不直接操作MySQL。兼容旧AI服务缺失字段或空数组，统一处理为null。求职者简历页按非空数组动态显示栏目，为null、缺失或空数组时隐藏。
+
+新投递的五类信息保存在 `resumeSnapshot.optionalSections`，字段名称与上表相同，企业投递详情同样动态展示；历史投递不补写，避免改变投递时快照。重新解析清空旧字段并重新提取，旧简历需要重新解析才能得到这些内容。确认接口支持编辑五类可选信息，详见下方补充。
+
+DDL及幂等增量升级语句统一存放在 `docs/init.sql`。
+
+
+### 可选经历编辑与换行
+
+`POST /api/resumes/{id}/confirm` 新增可选请求属性 `optionalSections`，对象内可使用上述五个 `parsed*` 字段，每个值为字符串数组或null。例如：
+
+```json
+{"expectedVersion":1,"name":"张三","contactPhone":"13800138000","education":"BACHELOR","skills":["Java"],"optionalSections":{"parsedProjectExperience":["招聘平台\n职责：开发接口\n成果：完成上线"],"parsedWorkExperience":null}}
+```
+
+每类最多20项，每项1至2000字。null或空数组清空该栏目，省略整个optionalSections或其中字段时保留已有确认值（首次确认沿用AI结果）。编辑结果及换行保存到 `resume.confirmed_profile` 的 `optionalSections`，不覆盖AI原始字段，无需新增数据库列。前端经历多行编辑框随底部确认按钮提交；企业按当前展示来源选择确认值或AI原文。历史投递仍使用当时快照。

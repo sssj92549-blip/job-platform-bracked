@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS profile (
   discoverable TINYINT NOT NULL DEFAULT 0,
   company_name VARCHAR(100) NULL,
   industry VARCHAR(100) NULL,
+  company_size VARCHAR(32) NULL,
   company_description VARCHAR(2000) NULL,
   review_status ENUM('PENDING','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING',
   review_reason VARCHAR(500) NULL,

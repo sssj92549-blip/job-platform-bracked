@@ -81,6 +81,31 @@ public class Resume extends BaseEntity {
     public String getParsedSkills() { return parsedSkills; }
     public void setParsedSkills(String value) { this.parsedSkills = value; }
 
+    /** AI工作经历，JSON字符串数组；无内容为NULL。 */
+    private String parsedWorkExperience;
+    public String getParsedWorkExperience() { return parsedWorkExperience; }
+    public void setParsedWorkExperience(String value) { this.parsedWorkExperience = value; }
+
+    /** AI实习经历，JSON字符串数组；无内容为NULL。 */
+    private String parsedInternshipExperience;
+    public String getParsedInternshipExperience() { return parsedInternshipExperience; }
+    public void setParsedInternshipExperience(String value) { this.parsedInternshipExperience = value; }
+
+    /** AI项目经历，JSON字符串数组；无内容为NULL。 */
+    private String parsedProjectExperience;
+    public String getParsedProjectExperience() { return parsedProjectExperience; }
+    public void setParsedProjectExperience(String value) { this.parsedProjectExperience = value; }
+
+    /** AI校园经历，JSON字符串数组；无内容为NULL。 */
+    private String parsedCampusExperience;
+    public String getParsedCampusExperience() { return parsedCampusExperience; }
+    public void setParsedCampusExperience(String value) { this.parsedCampusExperience = value; }
+
+    /** AI证书，JSON字符串数组；无内容为NULL。 */
+    private String parsedCertificates;
+    public String getParsedCertificates() { return parsedCertificates; }
+    public void setParsedCertificates(String value) { this.parsedCertificates = value; }
+
     /** AI摘要。 */
     private String parsedSummary;
     public String getParsedSummary() { return parsedSummary; }

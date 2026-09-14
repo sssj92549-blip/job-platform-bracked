@@ -11,7 +11,6 @@ public final class AuthViews {
     public record User(String id,String accountId,String username,String phone,String role,
         String name,String education,String avatarUrl,String city,String introduction,boolean discoverable,
         String companyName,String industry,String companyDescription,String reviewStatus,String reviewReason,
-        boolean enabled,OffsetDateTime createdAt) {}
+        boolean enabled,OffsetDateTime createdAt,String companySize) {}
     public record Session(String stage,User user,List<ProfileOption> profiles,String csrfToken) {}
 }
-

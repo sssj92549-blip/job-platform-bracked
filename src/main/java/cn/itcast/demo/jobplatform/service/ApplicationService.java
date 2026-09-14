@@ -66,7 +66,7 @@ public class ApplicationService {
                 Resume r=resumeService.confirmed(input.resumeId(),input.resumeVersion(),p.getId());
                 Application a=new Application(); a.setCandidateId(p.getId()); a.setJobId(j.getId()); a.setResumeId(r.getId()); a.setResumeVersion(r.getVersion()); a.setJobVersion(j.getVersion()); a.setStatus("SUBMITTED"); a.setProfileSource("CONFIRMED");
                 a.setJobSnapshot(b.write(jobs.view(j,true)));
-                a.setResumeSnapshot(b.write(b.object("confirmedProfile",b.read(r.getConfirmedProfile()),"originalProfile",b.read(r.getOriginalProfile()),"aiProfile",b.object("name",r.getParsedName(),"phone",r.getParsedPhone(),"education",r.getParsedEducation(),"skills",b.read(r.getParsedSkills())),"conflictStatus",r.getConflictStatus(),"conflicts",b.read(r.getConflicts()),"extractedText",r.getExtractedText())));
+                a.setResumeSnapshot(b.write(b.object("confirmedProfile",b.read(r.getConfirmedProfile()),"originalProfile",b.read(r.getOriginalProfile()),"aiProfile",b.object("name",r.getParsedName(),"phone",r.getParsedPhone(),"education",r.getParsedEducation(),"skills",b.read(r.getParsedSkills())),"conflictStatus",r.getConflictStatus(),"conflicts",b.read(r.getConflicts()),"extractedText",r.getExtractedText(),"optionalSections",resumeService.optionalSections(r))));
                 applications.insert(a); return view(a,false);
             });
         } catch(DuplicateKeyException e) { throw new BusinessException(HttpStatus.CONFLICT,40903,"已投递该职位，撤回后也不能重复投递"); }

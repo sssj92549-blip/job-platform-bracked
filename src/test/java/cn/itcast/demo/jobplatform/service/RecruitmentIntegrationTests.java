@@ -152,6 +152,33 @@ class RecruitmentIntegrationTests {
         resumeService.processOne(); assertThat(resumes.selectById(id).getParseStatus()).isEqualTo("SUCCESS");
         send("GET","/api/resumes/"+id,seeker,null).andExpect(jsonPath("$.data.conflictStatus").value("PENDING_VERIFY")).andExpect(jsonPath("$.data.parsedSkills[0]").value("Java"));
     }
+    @Test void optionalResumeSectionsPersistSnapshotAndClearOnReparse() throws Exception {
+        Resume r=resume(); r.setParseStatus("PENDING"); r.setConfirmationStatus("UNCONFIRMED"); resumes.updateById(r);
+        var result=json.createObjectNode();
+        result.put("resumeId",r.getId().toString()); result.put("resumeVersion",1);
+        result.put("extractedText","项目：招聘平台，负责接口开发"); result.put("extractionMethod","TEXT"); result.put("pageCount",1);
+        result.putNull("parsedName"); result.putNull("parsedPhone"); result.putNull("parsedEducation"); result.putNull("parsedSummary"); result.putArray("parsedSkills");
+        result.putArray("parsedProjectExperience").add("招聘平台：负责接口开发"); result.putNull("parsedWorkExperience");
+        when(python.call(eq(HttpMethod.POST),eq("/internal/resumes/parse"),any())).thenReturn(result);
+        resumeService.processOne();
+        Resume stored=resumes.selectById(r.getId()); assertThat(stored.getParseStatus()).isEqualTo("SUCCESS");
+        assertThat(resumeService.view(stored).path("parsedProjectExperience").get(0).asText()).contains("招聘平台");
+        assertThat(resumeService.view(stored).path("parsedWorkExperience").isNull()).isTrue();
+        assertThat(resumeService.optionalSections(stored).path("parsedProjectExperience").isArray()).isTrue();
+        send("POST","/api/resumes/"+r.getId()+"/reparse",seeker,new Version(1)).andExpect(status().isAccepted());
+        assertThat(resumes.selectById(r.getId()).getParsedProjectExperience()).isNull();
+        result.put("resumeVersion",2); result.put("parsedProjectExperience","not an array");
+        resumeService.processOne(); assertThat(resumes.selectById(r.getId()).getParseStatus()).isEqualTo("FAILED");
+    }
+    @Test void confirmationStoresEditedExperienceAndKeepsAiOriginal() throws Exception {
+        Resume r=resume(); r.setParsedProjectExperience("[\"AI原文\"]"); resumes.updateById(r);
+        var edits=Map.of("parsedProjectExperience",List.of("招聘平台\n负责接口开发"));
+        send("POST","/api/resumes/"+r.getId()+"/confirm",seeker,new Confirm(1,"确认姓名","13800138000","MASTER",List.of("Java"),edits))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.confirmedProfile.optionalSections.parsedProjectExperience[0]").value("招聘平台\n负责接口开发"));
+        assertThat(resumes.selectById(r.getId()).getParsedProjectExperience()).contains("AI原文");
+        send("POST","/api/resumes/"+r.getId()+"/confirm",seeker,new Confirm(2,"确认姓名","13800138000","MASTER",List.of("Java"),Map.of("parsedProjectExperience",List.of())))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.confirmedProfile.optionalSections.parsedProjectExperience").isEmpty());
+    }
     @Test void profileOptionalFieldsCanBeCleared() throws Exception {
         send("PUT","/api/users/me/profile",seeker,new Personal("张三","BACHELOR","杭州","介绍")).andExpect(status().isOk());
         send("PUT","/api/users/me/profile",seeker,new Personal("张三","BACHELOR",null,null)).andExpect(status().isOk()).andExpect(jsonPath("$.data.city").isEmpty());
@@ -162,6 +189,24 @@ class RecruitmentIntegrationTests {
         mvc.perform(get("/api/jobs").param("salaryMin","16000")).andExpect(jsonPath("$.data.total").value(0));
         send("GET","/api/company/jobs",other,null).andExpect(jsonPath("$.data.total").value(0));
         send("GET","/api/admin/jobs?companyId="+company.getId(),admin,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+    }
+    @Test void companyMetadataFiltersAndCachedDetailsUseCurrentProfile() throws Exception {
+        Job j=job(); j.setExperienceMinYears(2); jobs.updateById(j);
+        company.setIndustry("软件服务"); company.setCompanySize("100_499"); profiles.updateById(company);
+        JsonNode cached=data(mvc.perform(get("/api/jobs/"+j.getId())).andExpect(status().isOk()).andExpect(jsonPath("$.data.companySize").value("100_499")));
+        mvc.perform(get("/api/jobs").param("industry","软件").param("companySize","100_499").param("experience","1_3"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        mvc.perform(get("/api/jobs").param("companySize","UNDER_20")).andExpect(jsonPath("$.data.total").value(0));
+        mvc.perform(get("/api/jobs").param("experience","ENTRY")).andExpect(jsonPath("$.data.total").value(0));
+        when(redis.cachedJob(j.getId(),1)).thenReturn(cached.toString());
+        company.setCompanySize("500_999"); profiles.updateById(company);
+        mvc.perform(get("/api/jobs/"+j.getId())).andExpect(jsonPath("$.data.companySize").value("500_999"));
+    }
+    @Test void companySizeIsEditableAndValidated() throws Exception {
+        send("PUT","/api/company/profile",company,Map.of("companyName","企业资料","industry","软件","companySize","20_99"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.companySize").value("20_99"));
+        send("PUT","/api/company/profile",company,Map.of("companyName","企业资料","companySize","INVALID")).andExpect(status().isBadRequest());
+        assertThat(profiles.selectById(company.getId()).getCompanySize()).isEqualTo("20_99");
     }
     @Test void vectorWorkerPersistsSuccessAndRecoversInterruptedWork() {
         Resume r=resume(); vectors.enqueue(r,false);

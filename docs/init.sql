@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS profile (
   discoverable TINYINT NOT NULL DEFAULT 0 COMMENT '求职者是否允许人才发现',
   company_name VARCHAR(100) NULL COMMENT '公司名，企业必填',
   industry VARCHAR(100) NULL COMMENT '行业',
+  company_size VARCHAR(32) NULL COMMENT '人数规模：UNDER_20/20_99/100_499/500_999/1000_9999/10000_PLUS',
   company_description VARCHAR(2000) NULL COMMENT '企业简介',
   review_status ENUM('PENDING','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING' COMMENT '审核状态；求职者由服务层设为APPROVED',
   review_reason VARCHAR(500) NULL COMMENT '审核原因',
@@ -96,6 +97,11 @@ CREATE TABLE IF NOT EXISTS resume (
   parsed_phone VARCHAR(32) NULL COMMENT 'AI联系方式，不修改登录手机号',
   parsed_education ENUM('HIGH_SCHOOL','JUNIOR_COLLEGE','BACHELOR','MASTER','DOCTOR','OTHER') NULL COMMENT 'AI学历',
   parsed_skills JSON NULL COMMENT 'AI技能数组',
+  parsed_work_experience JSON NULL COMMENT 'AI工作经历数组，无内容为NULL',
+  parsed_internship_experience JSON NULL COMMENT 'AI实习经历数组，无内容为NULL',
+  parsed_project_experience JSON NULL COMMENT 'AI项目经历数组，无内容为NULL',
+  parsed_campus_experience JSON NULL COMMENT 'AI校园经历数组，无内容为NULL',
+  parsed_certificates JSON NULL COMMENT 'AI证书数组，无内容为NULL',
   parsed_summary TEXT NULL COMMENT 'AI摘要',
   extracted_text MEDIUMTEXT NULL COMMENT '提取全文，服务层限制60000字',
   extraction_method ENUM('TEXT','OCR','MIXED') NULL COMMENT '提取方式',
@@ -262,3 +268,32 @@ INSERT INTO job (id,company_id,title,city,salary_min,salary_max,education_requir
 INSERT INTO job (id,company_id,title,city,salary_min,salary_max,education_requirement,experience_min_years,description,requirements,skills,status,version,deleted) SELECT 2099029336628677234,@seed_company_id,'全栈开发工程师','武汉',12000,20000,'BACHELOR',2,'承担招聘系统前后端功能开发，设计接口和数据结构，完成权限控制、文件上传及第三方AI服务集成。','熟悉Spring Boot和Vue 3，掌握MySQL、Redis及HTTP通信，有完整项目交付经验，注重可维护性和测试。','["Java", "Vue 3", "Spring Boot", "MySQL", "Redis"]','DRAFT',1,0 WHERE @seed_company_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM job existing WHERE existing.company_id=@seed_company_id AND existing.title='全栈开发工程师' AND existing.deleted=0);
 COMMIT;
 SELECT title,city,salary_min,salary_max,status FROM job WHERE company_id=@seed_company_id AND deleted=0 ORDER BY id;
+
+
+-- 已有数据库升级：仅新增缺失的企业规模字段，不修改现有企业资料。
+SET @company_size_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='profile' AND column_name='company_size')=0, 'ALTER TABLE profile ADD COLUMN company_size VARCHAR(32) NULL COMMENT ''Company employee size'' AFTER industry', 'SELECT 1');
+PREPARE company_size_migration FROM @company_size_ddl;
+EXECUTE company_size_migration;
+DEALLOCATE PREPARE company_size_migration;
+
+-- 简历动态可选字段增量升级；兼容已有数据库，保留历史数据。
+SET @resume_optional_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='resume' AND column_name='parsed_work_experience')=0, 'ALTER TABLE resume ADD COLUMN parsed_work_experience JSON NULL COMMENT ''AI工作经历数组，无内容为NULL''', 'SELECT 1');
+PREPARE resume_optional_migration FROM @resume_optional_ddl;
+EXECUTE resume_optional_migration;
+DEALLOCATE PREPARE resume_optional_migration;
+SET @resume_optional_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='resume' AND column_name='parsed_internship_experience')=0, 'ALTER TABLE resume ADD COLUMN parsed_internship_experience JSON NULL COMMENT ''AI实习经历数组，无内容为NULL''', 'SELECT 1');
+PREPARE resume_optional_migration FROM @resume_optional_ddl;
+EXECUTE resume_optional_migration;
+DEALLOCATE PREPARE resume_optional_migration;
+SET @resume_optional_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='resume' AND column_name='parsed_project_experience')=0, 'ALTER TABLE resume ADD COLUMN parsed_project_experience JSON NULL COMMENT ''AI项目经历数组，无内容为NULL''', 'SELECT 1');
+PREPARE resume_optional_migration FROM @resume_optional_ddl;
+EXECUTE resume_optional_migration;
+DEALLOCATE PREPARE resume_optional_migration;
+SET @resume_optional_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='resume' AND column_name='parsed_campus_experience')=0, 'ALTER TABLE resume ADD COLUMN parsed_campus_experience JSON NULL COMMENT ''AI校园经历数组，无内容为NULL''', 'SELECT 1');
+PREPARE resume_optional_migration FROM @resume_optional_ddl;
+EXECUTE resume_optional_migration;
+DEALLOCATE PREPARE resume_optional_migration;
+SET @resume_optional_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='resume' AND column_name='parsed_certificates')=0, 'ALTER TABLE resume ADD COLUMN parsed_certificates JSON NULL COMMENT ''AI证书数组，无内容为NULL''', 'SELECT 1');
+PREPARE resume_optional_migration FROM @resume_optional_ddl;
+EXECUTE resume_optional_migration;
+DEALLOCATE PREPARE resume_optional_migration;
