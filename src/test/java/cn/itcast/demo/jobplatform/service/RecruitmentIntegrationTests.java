@@ -181,6 +181,12 @@ class RecruitmentIntegrationTests {
         send("POST","/api/resumes/"+r.getId()+"/confirm",seeker,new Confirm(2,"确认姓名","13800138000","MASTER",List.of("Java"),Map.of("parsedProjectExperience",List.of())))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.confirmedProfile.optionalSections.parsedProjectExperience").isEmpty());
     }
+    @Test void companyPageOnlyListsPublishedJobsFromThatCompany() throws Exception {
+        Job published=job(); Job hidden=job(); hidden.setStatus("DRAFT"); jobs.updateById(hidden);
+        Job foreign=job(); foreign.setCompanyId(other.getId()); jobs.updateById(foreign);
+        mvc.perform(get("/api/jobs").param("companyId",company.getId().toString())).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1)).andExpect(jsonPath("$.data.records[0].id").value(published.getId().toString()));
+        mvc.perform(get("/api/jobs").param("companyId","invalid")).andExpect(status().isBadRequest());
+    }
     @Test void profileOptionalFieldsCanBeCleared() throws Exception {
         send("PUT","/api/users/me/profile",seeker,new Personal("张三","BACHELOR","杭州","介绍")).andExpect(status().isOk());
         send("PUT","/api/users/me/profile",seeker,new Personal("张三","BACHELOR",null,null)).andExpect(status().isOk()).andExpect(jsonPath("$.data.city").isEmpty());

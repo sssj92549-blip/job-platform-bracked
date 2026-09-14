@@ -52,7 +52,13 @@ public class JobService {
     }
     public PageResult<ObjectNode> list(Map<String,String> q,String scope,HttpServletRequest request) {
         QueryWrapper<Job> w=new QueryWrapper<>();
-        if("PUBLIC".equals(scope)) w.eq("status","APPROVED").inSql("company_id",PUBLIC_COMPANIES);
+        if("PUBLIC".equals(scope)) {
+            w.eq("status","APPROVED").inSql("company_id",PUBLIC_COMPANIES);
+            if(q.containsKey("companyId")&&!q.get("companyId").isBlank()) {
+                try { long companyId=Long.parseLong(q.get("companyId")); if(companyId<=0) throw new NumberFormatException(); w.eq("company_id",companyId); }
+                catch(NumberFormatException e) { bad("companyId须为有效ID"); }
+            }
+        }
         else {
             Profile p=b.actor(request,"ADMIN".equals(scope)?"ADMIN":"COMPANY");
             if("COMPANY".equals(scope)) w.eq("company_id",p.getId());
