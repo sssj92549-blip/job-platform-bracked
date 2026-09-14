@@ -31,3 +31,9 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Local credentials and generated files
+src/main/resources/application-local.yml
+uploads/
+logs/
+.env

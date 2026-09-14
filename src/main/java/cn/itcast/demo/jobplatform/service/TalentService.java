@@ -16,18 +16,18 @@ import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
 @Service
 public class TalentService {
     private final ResumeMapper resumes;
-    private final ProfileMapper profiles;
+    private final ProfileRepository profiles;
     private final ApplicationMapper applications;
     private final JobService jobs;
     private final BusinessSupport b;
     private final BusinessRedis redis;
     private final PythonAiClient python;
-    public TalentService(ResumeMapper resumes,ProfileMapper profiles,ApplicationMapper applications,JobService jobs,BusinessSupport b,BusinessRedis redis,PythonAiClient python) {
+    public TalentService(ResumeMapper resumes,ProfileRepository profiles,ApplicationMapper applications,JobService jobs,BusinessSupport b,BusinessRedis redis,PythonAiClient python) {
         this.resumes=resumes; this.profiles=profiles; this.applications=applications; this.jobs=jobs; this.b=b; this.redis=redis; this.python=python;
     }
     private QueryWrapper<Resume> eligible(Long jobId) {
         return new QueryWrapper<Resume>().eq("is_current",true).eq("parse_status","SUCCESS").eq("confirmation_status","CONFIRMED").eq("index_status","READY")
-            .inSql("candidate_id","select p.id from profile p join account a on a.id=p.account_id where p.role='JOB_SEEKER' and p.enabled=1 and a.enabled=1 and p.review_status='APPROVED' and p.discoverable=1")
+            .inSql("candidate_id","select p.id from profile_details p join account a on a.id=p.account_id where p.role='JOB_SEEKER' and p.enabled=1 and a.enabled=1 and p.review_status='APPROVED' and p.discoverable=1")
             .apply("not exists (select 1 from application a where a.candidate_id=resume.candidate_id and a.job_id={0})",jobId);
     }
     public ObjectNode search(Long id,Talent input,HttpServletRequest request) {

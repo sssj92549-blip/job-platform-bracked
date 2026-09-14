@@ -19,10 +19,10 @@ import java.util.*;
 @Service
 public class AccountService {
     private final AccountMapper accounts;
-    private final ProfileMapper profiles;
+    private final ProfileRepository profiles;
     private final PasswordEncoder passwords;
     private final String dummyHash;
-    public AccountService(AccountMapper accounts,ProfileMapper profiles,PasswordEncoder passwords) {
+    public AccountService(AccountMapper accounts,ProfileRepository profiles,PasswordEncoder passwords) {
         this.accounts=accounts; this.profiles=profiles; this.passwords=passwords;
         this.dummyHash=passwords.encode(UUID.randomUUID().toString());
     }

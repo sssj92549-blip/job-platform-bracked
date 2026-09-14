@@ -17,9 +17,9 @@ import java.util.*;
 public class BusinessSupport {
     public final ObjectMapper json;
     private final AuthService auth;
-    private final ProfileMapper profiles;
+    private final ProfileRepository profiles;
     private final AccountMapper accounts;
-    public BusinessSupport(ObjectMapper json, AuthService auth, ProfileMapper profiles, AccountMapper accounts) {
+    public BusinessSupport(ObjectMapper json, AuthService auth, ProfileRepository profiles, AccountMapper accounts) {
         this.json=json; this.auth=auth; this.profiles=profiles; this.accounts=accounts;
     }
     public Profile actor(HttpServletRequest request, String... roles) {

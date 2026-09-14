@@ -15,11 +15,11 @@ import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
 public class VectorSyncService {
     private final VectorSyncTaskMapper tasks;
     private final ResumeMapper resumes;
-    private final ProfileMapper profiles;
+    private final ProfileRepository profiles;
     private final PythonAiClient python;
     private final BusinessSupport b;
     private final TransactionTemplate tx;
-    public VectorSyncService(VectorSyncTaskMapper tasks,ResumeMapper resumes,ProfileMapper profiles,PythonAiClient python,BusinessSupport b,PlatformTransactionManager tm) {
+    public VectorSyncService(VectorSyncTaskMapper tasks,ResumeMapper resumes,ProfileRepository profiles,PythonAiClient python,BusinessSupport b,PlatformTransactionManager tm) {
         this.tasks=tasks; this.resumes=resumes; this.profiles=profiles; this.python=python; this.b=b; tx=new TransactionTemplate(tm);
     }
     /** 由调用方事务写入，提交前后台不能领取该任务。 */

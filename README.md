@@ -115,3 +115,10 @@ docs/jiekou.md                业务接口契约
 ```
 
 MySQL测试从被忽略的application-local.yml读取本机连接凭据；Python在自动化测试中使用受控替身，避免消耗模型额度。常规test使用H2和隔离的外部服务。真实SQL来自docs/init.sql。
+
+
+### 身份资料分表
+
+`account` 保存登录凭证；`profile` 保存公共身份；`candidate_profile` 与 `company_profile` 以 `profile_id` 为主键和外键，保存角色资料。`profile_details` 为只读聚合视图，`ProfileRepository` 统一事务写入，各实体使用MyBatis-Plus。更新时间由公共身份实体的自动填充处理。
+
+首次建库和旧结构迁移均见 `docs/init.sql`；迁移前备份、停止旧版服务，迁移后启动新版。接口JSON保持兼容，身份ID及业务外键不变。

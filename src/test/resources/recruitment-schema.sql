@@ -170,3 +170,7 @@ CREATE TABLE IF NOT EXISTS vector_sync_task (
   CONSTRAINT fk_vector_resume FOREIGN KEY (resume_id) REFERENCES resume(id),
   CONSTRAINT ck_vector_task CHECK (resume_version>=1 AND attempts>=0 AND (operation='DELETE' OR payload IS NOT NULL))
 );
+
+ALTER TABLE resume ADD COLUMN parsed_birth_date DATE;
+ALTER TABLE resume ADD COLUMN parsed_age INT;
+ALTER TABLE resume ADD COLUMN parsed_work_experience_years INT;

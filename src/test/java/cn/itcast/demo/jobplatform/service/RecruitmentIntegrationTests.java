@@ -42,7 +42,7 @@ class RecruitmentIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired AccountMapper accounts;
-    @Autowired ProfileMapper profiles;
+    @Autowired ProfileRepository profiles;
     @Autowired JobMapper jobs;
     @Autowired ResumeMapper resumes;
     @Autowired ApplicationMapper applications;
@@ -91,6 +91,15 @@ class RecruitmentIntegrationTests {
         send("PUT","/api/company/jobs/"+id,company,input).andExpect(status().isConflict());
         send("POST","/api/company/jobs/"+id+"/close",company,null).andExpect(status().isOk());
         mvc.perform(get("/api/jobs/"+id)).andExpect(status().isNotFound());
+    }
+    @Test void applicationAutomaticallyScoresOnceWithoutBlockingSubmission() throws Exception {
+        Job j=job(); Resume r=resume();
+        send("POST","/api/applications",seeker,new Apply(j.getId(),r.getId(),1)).andExpect(status().isCreated());
+        assertThat(tasks.selectCount(null)).isEqualTo(1);
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/match"),any())).thenReturn(json.readTree("{\"score\":86,\"reasons\":[\"skills match\"],\"gaps\":[]}"));
+        ai.processOne(); ai.processOne();
+        send("GET","/api/company/applications?jobId="+j.getId(),company,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.records[0].matchScore").value(86));
+        verify(python,times(1)).call(eq(HttpMethod.POST),eq("/internal/ai/match"),any());
     }
     @Test void applicationRequiresVersionPreservesSnapshotAndRejectsDuplicateOrOtherCompany() throws Exception {
         Job j=job(); Resume r=resume();
@@ -160,10 +169,12 @@ class RecruitmentIntegrationTests {
         result.put("resumeId",r.getId().toString()); result.put("resumeVersion",1);
         result.put("extractedText","项目：招聘平台，负责接口开发"); result.put("extractionMethod","TEXT"); result.put("pageCount",1);
         result.putNull("parsedName"); result.putNull("parsedPhone"); result.putNull("parsedEducation"); result.putNull("parsedSummary"); result.putArray("parsedSkills");
+        result.put("parsedBirthDate","1998-01-01"); result.put("parsedAge",28); result.put("parsedWorkExperienceYears",4);
         result.putArray("parsedProjectExperience").add("招聘平台：负责接口开发"); result.putNull("parsedWorkExperience");
         when(python.call(eq(HttpMethod.POST),eq("/internal/resumes/parse"),any())).thenReturn(result);
         resumeService.processOne();
         Resume stored=resumes.selectById(r.getId()); assertThat(stored.getParseStatus()).isEqualTo("SUCCESS");
+        assertThat(stored.getParsedBirthDate()).isEqualTo(java.time.LocalDate.of(1998,1,1)); assertThat(stored.getParsedAge()).isEqualTo(28); assertThat(stored.getParsedWorkExperienceYears()).isEqualTo(4);
         assertThat(resumeService.view(stored).path("parsedProjectExperience").get(0).asText()).contains("招聘平台");
         assertThat(resumeService.view(stored).path("parsedWorkExperience").isNull()).isTrue();
         assertThat(resumeService.optionalSections(stored).path("parsedProjectExperience").isArray()).isTrue();

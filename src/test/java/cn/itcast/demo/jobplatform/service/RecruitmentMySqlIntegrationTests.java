@@ -43,4 +43,23 @@ class RecruitmentMySqlIntegrationTests extends RecruitmentIntegrationTests {
             statement.executeUpdate("DROP DATABASE `"+DATABASE+"`");
         }
     }
+
+    @org.junit.jupiter.api.Test
+    void filtersConfirmedCandidateFieldsInMySql() throws Exception {
+        var j=job(); var r=resume();
+        var confirmed=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(r.getConfirmedProfile());
+        confirmed.put("birthDate",BusinessSupport.now().toLocalDate().minusYears(28).toString()); confirmed.put("workExperienceYears",4);
+        r.setConfirmedProfile(confirmed.toString()); resumes.updateById(r);
+        send("POST","/api/applications",seeker,new cn.itcast.demo.jobplatform.dto.RecruitmentRequests.Apply(j.getId(),r.getId(),1)).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isCreated());
+        String path="/api/company/applications?jobId="+j.getId();
+        for(String filter:List.of("education=BACHELOR","experience=3_5","ageMin=28","ageMax=28")) send("GET",path+"&"+filter,company,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(1));
+        send("GET",path+"&education=BACHELOR&experience=3_5&ageMin=28&ageMax=28",company,null)
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(1))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.records[0].candidateAge").value(28));
+        send("GET",path+"&education=MASTER",company,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(0));
+        send("GET",path+"&experience=1_3",company,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(0));
+        send("GET",path+"&ageMin=29",company,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(0));
+        send("GET",path+"&ageMin=40&ageMax=20",company,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
+        send("GET",path+"&experience=3_5",other,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(0));
+    }
 }

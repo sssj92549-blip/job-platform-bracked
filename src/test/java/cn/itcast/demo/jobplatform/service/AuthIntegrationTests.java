@@ -28,7 +28,7 @@ class AuthIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired AccountMapper accounts;
-    @Autowired ProfileMapper profiles;
+    @Autowired ProfileRepository profiles;
     @MockitoBean LoginGuard guard;
     private MockHttpSession session;
     private String csrf;

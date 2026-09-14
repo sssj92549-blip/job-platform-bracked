@@ -17,13 +17,13 @@ import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
 @Service
 public class JobService {
     private final JobMapper jobs;
-    private final ProfileMapper profiles;
+    private final ProfileRepository profiles;
     private final ApplicationMapper applications;
     private final BusinessSupport b;
     private final BusinessRedis redis;
     private final AuditService audit;
-    private static final String PUBLIC_COMPANIES="select p.id from profile p join account a on a.id=p.account_id where p.role='COMPANY' and p.enabled=1 and a.enabled=1 and p.review_status='APPROVED'";
-    public JobService(JobMapper jobs,ProfileMapper profiles,ApplicationMapper applications,BusinessSupport b,BusinessRedis redis,AuditService audit) {
+    private static final String PUBLIC_COMPANIES="select p.id from profile_details p join account a on a.id=p.account_id where p.role='COMPANY' and p.enabled=1 and a.enabled=1 and p.review_status='APPROVED'";
+    public JobService(JobMapper jobs,ProfileRepository profiles,ApplicationMapper applications,BusinessSupport b,BusinessRedis redis,AuditService audit) {
         this.jobs=jobs; this.profiles=profiles; this.applications=applications; this.b=b; this.redis=redis; this.audit=audit;
     }
     public Job require(Long id,boolean lock) {
@@ -69,16 +69,16 @@ public class JobService {
             if(q.containsKey("status")&&!q.get("status").isBlank()) w.eq("status",q.get("status"));
         }
         String keyword=trim(q.get("keyword"));
-        if(keyword!=null && !keyword.isEmpty()) w.and(n->n.like("title",keyword).or().apply("company_id in (select id from profile where company_name like {0})","%"+keyword+"%"));
+        if(keyword!=null && !keyword.isEmpty()) w.and(n->n.like("title",keyword).or().apply("company_id in (select id from profile_details where company_name like {0})","%"+keyword+"%"));
         if(q.containsKey("city")&&!q.get("city").isBlank()) w.eq("city",q.get("city"));
         if(q.containsKey("education")&&!q.get("education").isBlank()) w.eq("education_requirement",q.get("education"));
         if(q.containsKey("industry")&&!q.get("industry").isBlank()) {
             if(q.get("industry").length()>100) bad("行业筛选最多100字");
-            w.apply("company_id in (select id from profile where industry like {0})","%"+q.get("industry").trim()+"%");
+            w.apply("company_id in (select id from profile_details where industry like {0})","%"+q.get("industry").trim()+"%");
         }
         if(q.containsKey("companySize")&&!q.get("companySize").isBlank()) {
             if(!Set.of("UNDER_20","20_99","100_499","500_999","1000_9999","10000_PLUS").contains(q.get("companySize"))) bad("公司规模无效");
-            w.apply("company_id in (select id from profile where company_size={0})",q.get("companySize"));
+            w.apply("company_id in (select id from profile_details where company_size={0})",q.get("companySize"));
         }
         if(q.containsKey("experience")&&!q.get("experience").isBlank()) {
             switch(q.get("experience")) {

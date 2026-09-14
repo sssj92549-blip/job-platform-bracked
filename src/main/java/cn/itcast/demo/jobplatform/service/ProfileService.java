@@ -21,7 +21,7 @@ import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
 /** 个人资料、企业审核与档案启停；账号与多身份档案不混用。 */
 @Service
 public class ProfileService {
-    private final ProfileMapper profiles;
+    private final ProfileRepository profiles;
     private final AccountMapper accounts;
     private final ResumeMapper resumes;
     private final AccountService accountService;
@@ -30,7 +30,7 @@ public class ProfileService {
     private final VectorSyncService vectors;
     private final FileStorageService files;
     private final AuditService audit;
-    public ProfileService(ProfileMapper profiles,AccountMapper accounts,ResumeMapper resumes,AccountService accountService,BusinessSupport b,BusinessRedis redis,VectorSyncService vectors,FileStorageService files,AuditService audit) {
+    public ProfileService(ProfileRepository profiles,AccountMapper accounts,ResumeMapper resumes,AccountService accountService,BusinessSupport b,BusinessRedis redis,VectorSyncService vectors,FileStorageService files,AuditService audit) {
         this.profiles=profiles; this.accounts=accounts; this.resumes=resumes; this.accountService=accountService; this.b=b; this.redis=redis; this.vectors=vectors; this.files=files; this.audit=audit;
     }
     public AuthViews.User view(Profile p) { return accountService.user(accounts.selectById(p.getAccountId()),p); }
@@ -38,14 +38,14 @@ public class ProfileService {
     public AuthViews.User personal(Personal input,HttpServletRequest request) {
         Profile p=b.actor(request,"JOB_SEEKER");
         Profile update=new Profile(); update.setName(input.name().trim()); update.setEducation(input.education());
-        profiles.update(update,new UpdateWrapper<Profile>().eq("id",p.getId()).set("city",trim(input.city())).set("introduction",trim(input.introduction())));
+        profiles.updateFields(p.getId(),update,ProfileRepository.fields("city",trim(input.city()),"introduction",trim(input.introduction())));
         return view(profiles.selectById(p.getId()));
     }
     @Transactional
     public AuthViews.User company(Company input,HttpServletRequest request) {
         if(input.companyName().trim().length()<2) bad("企业名称至少2个字");
         Profile p=b.actor(request,"COMPANY"); Profile update=new Profile(); update.setCompanyName(input.companyName().trim()); update.setReviewStatus("PENDING");
-        profiles.update(update,new UpdateWrapper<Profile>().eq("id",p.getId()).set("industry",trim(input.industry())).set("company_size",input.companySize()).set("city",trim(input.city())).set("company_description",trim(input.companyDescription())).set("review_reason",null));
+        profiles.updateFields(p.getId(),update,ProfileRepository.fields("industry",trim(input.industry()),"companySize",input.companySize(),"city",trim(input.city()),"companyDescription",trim(input.companyDescription()),"reviewReason",null));
         return view(profiles.selectById(p.getId()));
     }
     @Transactional
@@ -53,7 +53,7 @@ public class ProfileService {
         Profile p=b.actor(request,"COMPANY");
         Profile locked=profiles.selectOne(new QueryWrapper<Profile>().eq("id",p.getId()).last("FOR UPDATE"));
         if(!"REJECTED".equals(locked.getReviewStatus())) state("仅被拒绝企业可重新提交审核");
-        Profile update=new Profile(); update.setReviewStatus("PENDING"); profiles.update(update,new UpdateWrapper<Profile>().eq("id",p.getId()).set("review_reason",null)); return b.object("reviewStatus","PENDING");
+        Profile update=new Profile(); update.setReviewStatus("PENDING"); profiles.updateFields(p.getId(),update,ProfileRepository.fields("reviewReason",null)); return b.object("reviewStatus","PENDING");
     }
     @Transactional
     public ObjectNode discover(Discoverability input,HttpServletRequest request) {
@@ -89,7 +89,7 @@ public class ProfileService {
             if(!"COMPANY".equals(p.getRole())||!"PENDING".equals(p.getReviewStatus())) state("仅待审企业可审核");
             if("REJECTED".equals(review.decision())&&(review.reason()==null||review.reason().isBlank())) bad("拒绝时必须填写原因");
             p.setReviewStatus(review.decision()); p.setReviewReason(trim(review.reason())); reason=trim(review.reason()); action=review.decision();
-            profiles.update(p,new UpdateWrapper<Profile>().eq("id",id).set("review_reason",reason));
+            profiles.updateFields(id,p,ProfileRepository.fields("reviewReason",reason));
         } else {
             p.setEnabled(enabled.enabled()); profiles.updateById(p); reason=enabled.reason(); action=enabled.enabled()?"ENABLE":"DISABLE";
             if("JOB_SEEKER".equals(p.getRole())) {

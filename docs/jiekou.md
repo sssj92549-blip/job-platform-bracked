@@ -751,3 +751,54 @@ DDL及幂等增量升级语句统一存放在 `docs/init.sql`。
 发布前服务层校验企业名称（至少2字）、行业、合法公司规模、所在城市和公司简介均已填写；缺项返回409及待补充字段提示。企业账号必须启用且企业认证审核通过。企业认证审核与职位审核是独立规则，前者保留。保存草稿不要求这五项齐全。未通过认证的企业可读取自己的职位列表，不能发布。
 
 无需新增表或字段，复用profile的公司信息及job的状态、发布时间。历史职位不自动批量上架。
+
+
+## 求职者公司介绍页
+
+前端 `/companies/{id}`：由职位列表公司名和职位详情公司名进入，展示公司名称、行业、人数规模、所在城市、公司简介及全部在招职位（每页10条）。复用 `GET /api/companies/{id}` 获取基本资料。`GET /api/jobs` 新增可选参数 `companyId`（正整数），与已发布状态、企业可用性共同过滤；其他企业、草稿和已关闭职位不返回。无在招职位显示空状态。公司页支持查看职位详情和确认简历后投递。
+
+
+## 身份与角色资料拆表（2026-09-14）
+
+数据库职责如下，本文早期章节中提及profile的角色专属字段以本节为准：
+
+| 表 | 内容 |
+| --- | --- |
+| account | 用户名、手机号、密码哈希、账号启用状态 |
+| profile | id、account_id、role、enabled、显示名称name、头像或Logo路径avatar_path、created_at、updated_at |
+| candidate_profile | profile_id（主键兼外键）、education、city、introduction、discoverable |
+| company_profile | profile_id（主键兼外键）、company_name、industry、company_size、city、company_description、review_status、review_reason |
+
+两个角色资料表与公共身份一对一关联。身份显示名称（或企业联系人）及头像/Logo为共用字段，统一保留在profile；资料更新时间由修改时同步更新profile的updated_at记录。管理员不需要独立业务资料表，非企业角色无需认证审核，聚合接口中的reviewStatus固定返回APPROVED。
+
+`profile_details` 是只读数据库视图，通过左连接合并上述三张表，用于兼容现有接口与筛选。它不存储重复数据。`ProfileRepository` 在事务中写入各自的真实表；账号注册同时建立身份和对应的资料行，任一步失败整体回滚。
+
+原有profile.id全部保持不变，job.company_id、resume.candidate_id以及投递、AI任务、审计的身份外键继续引用profile.id。接口路径、JSON属性名称、前端表单均不变，企业发布所需资料校验继续生效。
+
+`docs/init.sql` 已包含新表结构、数据复制、旧专属字段移除和视图创建的幂等迁移段。升级前须备份并停止旧版后端，执行迁移后启动新版本；不可让旧版本继续写原结构。已有公司资料补充脚本已改为更新company_profile。
+
+本次未生成批量测试数据，也未修改现有账号密码。
+
+
+## 企业投递筛选：学历、工作年限、年龄
+
+企业端 `GET /api/company/applications` 支持以下可选参数，筛选与jobId、企业归属条件共同生效，先过滤再分页：
+
+- `education`：确认的最高学历，使用现有学历枚举，精确匹配。
+- `experience`：`0`（不足1整年）、`1_3`（1至3年）、`3_5`（大于3年至5年）、`5_10`（大于5年至10年）、`10_PLUS`（大于10年）。
+- `ageMin`、`ageMax`：0至120的整数，可只填一端，下限不得大于上限。
+
+企业筛选界面仅显示以上三类条件，不提供关键词、状态、匹配度、投递时间筛选；状态仍在列表中展示，原有状态接口参数为兼容其他调用保留。求职者投递页的状态筛选保持不变。
+
+简历确认接口新增可空 `birthDate`（YYYY-MM-DD，不得晚于今天）和 `workExperienceYears`（0至60整数，不含实习、按完整年计）字段，在简历确认页选填。它们存入resume.confirmed_profile JSON，提交后随application.resume_snapshot固定保存，无需增加数据库列。列表返回candidateEducation、candidateWorkExperienceYears、candidateAge，年龄按当前北京时间日期计算周岁。缺失字段返回null，前端显示未提供；启用相应范围后不匹配未知值。零年工作经验不等同于应届生。
+
+历史投递不回填或猜测年龄与工作年限；重新确认只影响之后的投递。
+
+
+### 简历自动提取与投递自动评分
+- 简历解析结果新增 `parsedBirthDate`（YYYY-MM-DD）、`parsedAge`（0–120）、`parsedWorkExperienceYears`（0–60，整年不含实习）；缺少可靠依据返回 null，Java 持久化到 resume 对应字段。最高学历沿用 parsedEducation。
+- 简历确认请求新增可选 `age`，并沿用 birthDate、workExperienceYears。前端从解析结果自动填写，用户确认后写入 confirmed_profile，投递时写入 resume_snapshot。出生日期优先计算年龄，仅提供年龄时作为确认时年龄展示。
+- POST /api/applications 成功时自动入队一次 MATCH 任务，不等待模型。结果保存 resume_job_match，企业列表 matchScore 自动读取；同简历和职位版本已有评分则复用。失败保留 ai_task 错误，不伪造分数，不回滚成功投递。
+- 仅上传/解析简历时没有目标职位，不进行无目标的人岗评分。求职者手动 AI 接口继续可用。
+- 企业端不展示状态列及手动匹配/面试题工具、简历全文展开。求职者端投递状态和 AI 功能不变。
+- 新增列的可重复增量迁移见 init.sql 末尾。旧投递快照不自动修改；重新解析并确认可补充后续投递资料。

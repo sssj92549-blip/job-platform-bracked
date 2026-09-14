@@ -1,7 +1,7 @@
 package cn.itcast.demo.jobplatform.entity;
 import com.baomidou.mybatisplus.annotation.TableName;
-/** 角色档案，同一账号每种角色最多一个。 */
-@TableName("profile")
+/** 身份与角色资料的只读聚合模型，对应profile_details视图；写入由ProfileRepository分发。 */
+@TableName("profile_details")
 public class Profile extends BaseEntity {
     /** 企业人数规模；为空表示尚未填写，不推测企业信息。 */
     private String companySize;

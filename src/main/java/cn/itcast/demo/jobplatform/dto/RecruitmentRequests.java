@@ -25,7 +25,8 @@ public final class RecruitmentRequests {
     public record Confirm(@NotNull @Min(1) Integer expectedVersion,
         @NotBlank @Size(max=50) String name, @NotBlank @Pattern(regexp="1[3-9][0-9]{9}") String contactPhone,
         @NotNull @Pattern(regexp=EDUCATION) String education,
-        @NotNull @Size(max=50) List<@NotBlank @Size(max=100) String> skills, java.util.Map<String,List<String>> optionalSections) {
+        @NotNull @Size(max=50) List<@NotBlank @Size(max=100) String> skills, java.util.Map<String,List<String>> optionalSections, @PastOrPresent java.time.LocalDate birthDate, @Min(0) @Max(60) Integer workExperienceYears, @Min(0) @Max(120) Integer age) {
+        public Confirm(Integer expectedVersion,String name,String contactPhone,String education,List<String> skills,java.util.Map<String,List<String>> optionalSections) { this(expectedVersion,name,contactPhone,education,skills,optionalSections,null,null,null); }
         public Confirm(Integer expectedVersion,String name,String contactPhone,String education,List<String> skills) { this(expectedVersion,name,contactPhone,education,skills,null); }
     }
     public record Apply(@NotNull @Positive Long jobId, @NotNull @Positive Long resumeId,

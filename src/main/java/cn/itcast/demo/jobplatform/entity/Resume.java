@@ -6,6 +6,19 @@ import java.time.LocalDateTime;
 /** resume持久化实体，接口使用独立视图避免泄漏内部字段。 */
 @TableName("resume")
 public class Resume extends BaseEntity {
+    /** AI提取的完整出生日期，未明确提供时为空。 */
+    private java.time.LocalDate parsedBirthDate;
+    public java.time.LocalDate getParsedBirthDate() { return parsedBirthDate; }
+    public void setParsedBirthDate(java.time.LocalDate value) { this.parsedBirthDate = value; }
+    /** AI提取的明确年龄，仅用于没有完整出生日期的简历。 */
+    private Integer parsedAge;
+    public Integer getParsedAge() { return parsedAge; }
+    public void setParsedAge(Integer value) { this.parsedAge = value; }
+    /** AI提取的整年工作年限，不含实习，无法确定时为空。 */
+    private Integer parsedWorkExperienceYears;
+    public Integer getParsedWorkExperienceYears() { return parsedWorkExperienceYears; }
+    public void setParsedWorkExperienceYears(Integer value) { this.parsedWorkExperienceYears = value; }
+
     /** 所属求职者profile.id。 */
     private Long candidateId;
     public Long getCandidateId() { return candidateId; }

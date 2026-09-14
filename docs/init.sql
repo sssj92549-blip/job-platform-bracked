@@ -23,33 +23,70 @@ CREATE TABLE IF NOT EXISTS account (
 ) ENGINE=InnoDB COMMENT='登录凭证；验证码、锁定计数及Session由服务端管理';
 
 CREATE TABLE IF NOT EXISTS profile (
-  id BIGINT NOT NULL COMMENT '身份ID，业务中的userId/candidateId/companyId均指此ID',
-  account_id BIGINT NOT NULL COMMENT '所属账号',
+  id BIGINT NOT NULL COMMENT '身份ID，保留现有业务外键',
+  account_id BIGINT NOT NULL COMMENT '所属登录账号',
   role ENUM('JOB_SEEKER','COMPANY','ADMIN') NOT NULL COMMENT '角色',
-  name VARCHAR(50) NULL COMMENT '姓名',
-  education ENUM('HIGH_SCHOOL','JUNIOR_COLLEGE','BACHELOR','MASTER','DOCTOR','OTHER') NULL COMMENT '学历',
-  avatar_path VARCHAR(255) NULL COMMENT 'uploads下相对路径，不是公开URL',
-  city VARCHAR(50) NULL COMMENT '城市',
-  introduction VARCHAR(2000) NULL COMMENT '个人简介',
-  discoverable TINYINT NOT NULL DEFAULT 0 COMMENT '求职者是否允许人才发现',
-  company_name VARCHAR(100) NULL COMMENT '公司名，企业必填',
-  industry VARCHAR(100) NULL COMMENT '行业',
-  company_size VARCHAR(32) NULL COMMENT '人数规模：UNDER_20/20_99/100_499/500_999/1000_9999/10000_PLUS',
-  company_description VARCHAR(2000) NULL COMMENT '企业简介',
-  review_status ENUM('PENDING','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING' COMMENT '审核状态；求职者由服务层设为APPROVED',
-  review_reason VARCHAR(500) NULL COMMENT '审核原因',
-  enabled TINYINT NOT NULL DEFAULT 1 COMMENT '当前档案是否启用',
+  name VARCHAR(50) NULL COMMENT '身份显示名称或联系人姓名',
+  avatar_path VARCHAR(255) NULL COMMENT '身份头像或企业Logo相对路径',
+  enabled TINYINT NOT NULL DEFAULT 1 COMMENT '身份启用状态',
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
   PRIMARY KEY (id),
   UNIQUE KEY uk_profile_account_role (account_id,role),
-  KEY idx_profile_review (role,review_status,enabled,id),
-  KEY idx_profile_discovery (role,discoverable,enabled,review_status,id),
   CONSTRAINT fk_profile_account FOREIGN KEY (account_id) REFERENCES account(id),
-  CONSTRAINT ck_profile_flags CHECK (enabled IN (0,1) AND discoverable IN (0,1)),
-  CONSTRAINT ck_profile_discovery CHECK (role='JOB_SEEKER' OR discoverable=0),
-  CONSTRAINT ck_profile_company CHECK (role<>'COMPANY' OR (company_name IS NOT NULL AND CHAR_LENGTH(TRIM(company_name)) BETWEEN 2 AND 100))
-) ENGINE=InnoDB COMMENT='角色档案；同一账号可以拥有求职者和企业身份';
+  CONSTRAINT ck_profile_flags CHECK (enabled IN (0,1))
+) ENGINE=InnoDB COMMENT='公共身份，角色业务资料分表存储';
+
+-- BEGIN PROFILE SPLIT MIGRATION
+CREATE TABLE IF NOT EXISTS candidate_profile (
+  profile_id BIGINT NOT NULL COMMENT '求职者身份profile.id，主键兼外键',
+  education ENUM('HIGH_SCHOOL','JUNIOR_COLLEGE','BACHELOR','MASTER','DOCTOR','OTHER') NULL COMMENT '学历',
+  city VARCHAR(50) NULL COMMENT '所在城市',
+  introduction VARCHAR(2000) NULL COMMENT '个人简介',
+  discoverable TINYINT NOT NULL DEFAULT 0 COMMENT '是否允许人才发现',
+  PRIMARY KEY (profile_id),
+  CONSTRAINT fk_candidate_profile_identity FOREIGN KEY (profile_id) REFERENCES profile(id),
+  CONSTRAINT ck_candidate_discoverable CHECK (discoverable IN (0,1)),
+  KEY idx_candidate_discoverable (discoverable,profile_id)
+) ENGINE=InnoDB COMMENT='求职者专属资料，时间由公共身份表维护';
+CREATE TABLE IF NOT EXISTS company_profile (
+  profile_id BIGINT NOT NULL COMMENT '企业身份profile.id，主键兼外键',
+  company_name VARCHAR(100) NOT NULL COMMENT '企业名称',
+  industry VARCHAR(100) NULL COMMENT '行业',
+  company_size VARCHAR(32) NULL COMMENT '企业人数规模',
+  city VARCHAR(50) NULL COMMENT '企业所在城市',
+  company_description VARCHAR(2000) NULL COMMENT '企业简介',
+  review_status ENUM('PENDING','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING' COMMENT '企业认证状态',
+  review_reason VARCHAR(500) NULL COMMENT '认证审核原因',
+  PRIMARY KEY (profile_id),
+  CONSTRAINT fk_company_profile_identity FOREIGN KEY (profile_id) REFERENCES profile(id),
+  CONSTRAINT ck_company_name CHECK (CHAR_LENGTH(TRIM(company_name)) BETWEEN 2 AND 100),
+  KEY idx_company_review (review_status,profile_id),
+  KEY idx_company_industry (industry),
+  KEY idx_company_size (company_size)
+) ENGINE=InnoDB COMMENT='企业专属资料，时间由公共身份表维护';
+SET @profile_split_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='profile' AND column_name='company_name')>0, 'INSERT INTO candidate_profile(profile_id,education,city,introduction,discoverable) SELECT p.id,p.education,p.city,p.introduction,p.discoverable FROM profile p WHERE p.role=''JOB_SEEKER'' AND NOT EXISTS(SELECT 1 FROM candidate_profile c WHERE c.profile_id=p.id)', 'SELECT 1');
+PREPARE profile_split FROM @profile_split_sql;
+EXECUTE profile_split;
+DEALLOCATE PREPARE profile_split;
+SET @profile_split_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='profile' AND column_name='company_name')>0, 'INSERT INTO company_profile(profile_id,company_name,industry,company_size,city,company_description,review_status,review_reason) SELECT p.id,p.company_name,p.industry,p.company_size,p.city,p.company_description,p.review_status,p.review_reason FROM profile p WHERE p.role=''COMPANY'' AND NOT EXISTS(SELECT 1 FROM company_profile c WHERE c.profile_id=p.id)', 'SELECT 1');
+PREPARE profile_split FROM @profile_split_sql;
+EXECUTE profile_split;
+DEALLOCATE PREPARE profile_split;
+SET @profile_split_sql = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='profile' AND column_name='company_name')>0, 'ALTER TABLE profile DROP CHECK ck_profile_flags, DROP CHECK ck_profile_discovery, DROP CHECK ck_profile_company, DROP INDEX idx_profile_review, DROP INDEX idx_profile_discovery, DROP COLUMN education, DROP COLUMN city, DROP COLUMN introduction, DROP COLUMN discoverable, DROP COLUMN company_name, DROP COLUMN industry, DROP COLUMN company_size, DROP COLUMN company_description, DROP COLUMN review_status, DROP COLUMN review_reason, ADD CONSTRAINT ck_profile_flags CHECK (enabled IN (0,1))', 'SELECT 1');
+PREPARE profile_split FROM @profile_split_sql;
+EXECUTE profile_split;
+DEALLOCATE PREPARE profile_split;
+CREATE OR REPLACE VIEW profile_details AS
+SELECT p.id,p.account_id,p.role,p.name,p.avatar_path,p.enabled,p.created_at,p.updated_at,
+       c.education,CASE WHEN p.role='COMPANY' THEN e.city ELSE c.city END AS city,
+       c.introduction,COALESCE(c.discoverable,0) AS discoverable,
+       e.company_name,e.industry,e.company_size,e.company_description,
+       CASE WHEN p.role='COMPANY' THEN e.review_status ELSE 'APPROVED' END AS review_status,
+       e.review_reason
+FROM profile p LEFT JOIN candidate_profile c ON c.profile_id=p.id AND p.role='JOB_SEEKER'
+LEFT JOIN company_profile e ON e.profile_id=p.id AND p.role='COMPANY';
+-- END PROFILE SPLIT MIGRATION
 
 CREATE TABLE IF NOT EXISTS job (
   id BIGINT NOT NULL COMMENT '职位ID',
@@ -241,7 +278,7 @@ CREATE TABLE IF NOT EXISTS vector_sync_task (
 -- ID需确认未占用；初始化失败应ROLLBACK，不能只创建account不创建profile。
 -- START TRANSACTION;
 -- INSERT INTO account(id,phone,username,password_hash) VALUES (1,'你的11位手机号','platform_admin','你生成的BCrypt哈希');
--- INSERT INTO profile(id,account_id,role,name,review_status) VALUES (1,1,'ADMIN','平台管理员','APPROVED');
+-- INSERT INTO profile(id,account_id,role,name) VALUES (1,1,'ADMIN','平台管理员');
 -- COMMIT;
 
 -- 业务实现注意：
@@ -271,10 +308,7 @@ SELECT title,city,salary_min,salary_max,status FROM job WHERE company_id=@seed_c
 
 
 -- 已有数据库升级：仅新增缺失的企业规模字段，不修改现有企业资料。
-SET @company_size_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='profile' AND column_name='company_size')=0, 'ALTER TABLE profile ADD COLUMN company_size VARCHAR(32) NULL COMMENT ''Company employee size'' AFTER industry', 'SELECT 1');
-PREPARE company_size_migration FROM @company_size_ddl;
-EXECUTE company_size_migration;
-DEALLOCATE PREPARE company_size_migration;
+
 
 -- 简历动态可选字段增量升级；兼容已有数据库，保留历史数据。
 SET @resume_optional_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='resume' AND column_name='parsed_work_experience')=0, 'ALTER TABLE resume ADD COLUMN parsed_work_experience JSON NULL COMMENT ''AI工作经历数组，无内容为NULL''', 'SELECT 1');
@@ -300,12 +334,26 @@ DEALLOCATE PREPARE resume_optional_migration;
 
 
 -- 补齐手机号13576200952的企业演示资料；只替换占位名称及空字段，不覆盖后续手工修改。
-UPDATE profile p JOIN account a ON a.id=p.account_id
+UPDATE company_profile p JOIN profile identity_profile ON identity_profile.id=p.profile_id JOIN account a ON a.id=identity_profile.account_id
 SET p.company_name=CASE WHEN p.company_name='111' THEN '杭州知遇信息科技有限公司' ELSE p.company_name END,
     p.industry=COALESCE(NULLIF(TRIM(p.industry),''),'互联网'),
     p.company_size=COALESCE(NULLIF(TRIM(p.company_size),''),'100_499'),
     p.city=COALESCE(NULLIF(TRIM(p.city),''),'杭州'),
     p.company_description=COALESCE(NULLIF(TRIM(p.company_description),''),'杭州知遇信息科技有限公司是一家面向企业数字化需求的软件研发与技术服务公司，主要开展企业管理系统、数据分析平台和人工智能应用的设计与开发。团队覆盖Java后端、Web前端、Python开发、软件测试及运维等技术方向，重视工程质量、团队协作和人才培养，为员工提供参与完整项目交付与持续学习的机会。'),
-    p.updated_at=CURRENT_TIMESTAMP
-WHERE a.phone='13576200952' AND p.id=2097628693383979010 AND p.role='COMPANY'
+    identity_profile.updated_at=CURRENT_TIMESTAMP
+WHERE a.phone='13576200952' AND p.profile_id=2097628693383979010 AND identity_profile.role='COMPANY'
   AND (p.company_name='111' OR NULLIF(TRIM(p.industry),'') IS NULL OR NULLIF(TRIM(p.company_size),'') IS NULL OR NULLIF(TRIM(p.city),'') IS NULL OR NULLIF(TRIM(p.company_description),'') IS NULL);
+
+-- 简历解析的招聘筛选字段：增量迁移可重复执行。
+SET @resume_demographic_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='resume' AND column_name='parsed_birth_date')=0, 'ALTER TABLE resume ADD COLUMN parsed_birth_date DATE NULL', 'SELECT 1');
+PREPARE resume_demographic_migration FROM @resume_demographic_ddl;
+EXECUTE resume_demographic_migration;
+DEALLOCATE PREPARE resume_demographic_migration;
+SET @resume_demographic_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='resume' AND column_name='parsed_age')=0, 'ALTER TABLE resume ADD COLUMN parsed_age INT NULL', 'SELECT 1');
+PREPARE resume_demographic_migration FROM @resume_demographic_ddl;
+EXECUTE resume_demographic_migration;
+DEALLOCATE PREPARE resume_demographic_migration;
+SET @resume_demographic_ddl = IF((SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='resume' AND column_name='parsed_work_experience_years')=0, 'ALTER TABLE resume ADD COLUMN parsed_work_experience_years INT NULL', 'SELECT 1');
+PREPARE resume_demographic_migration FROM @resume_demographic_ddl;
+EXECUTE resume_demographic_migration;
+DEALLOCATE PREPARE resume_demographic_migration;

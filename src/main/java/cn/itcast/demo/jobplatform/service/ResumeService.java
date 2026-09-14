@@ -23,7 +23,7 @@ import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
 @Service
 public class ResumeService {
     private final ResumeMapper resumes;
-    private final ProfileMapper profiles;
+    private final ProfileRepository profiles;
     private final AccountMapper accounts;
     private final BusinessSupport b;
     private final BusinessRedis redis;
@@ -31,7 +31,7 @@ public class ResumeService {
     private final VectorSyncService vectors;
     private final PythonAiClient python;
     private final TransactionTemplate tx;
-    public ResumeService(ResumeMapper resumes,ProfileMapper profiles,AccountMapper accounts,BusinessSupport b,BusinessRedis redis,FileStorageService files,VectorSyncService vectors,PythonAiClient python,PlatformTransactionManager tm) {
+    public ResumeService(ResumeMapper resumes,ProfileRepository profiles,AccountMapper accounts,BusinessSupport b,BusinessRedis redis,FileStorageService files,VectorSyncService vectors,PythonAiClient python,PlatformTransactionManager tm) {
         this.resumes=resumes; this.profiles=profiles; this.accounts=accounts; this.b=b; this.redis=redis; this.files=files; this.vectors=vectors; this.python=python; tx=new TransactionTemplate(tm);
     }
     public Resume own(Long id,Long candidate,boolean lock) {
@@ -76,7 +76,7 @@ public class ResumeService {
         Profile p=b.actor(request,"JOB_SEEKER"); Resume r=own(id,p.getId(),true); version(r.getVersion().equals(input.expectedVersion()));
         if(!"SUCCESS".equals(r.getParseStatus())) state("解析成功后才可确认");
         vectors.enqueue(r,true); r.setVersion(r.getVersion()+1); r.setConfirmationStatus("CONFIRMED"); r.setConfirmedAt(now());
-        ObjectNode confirmed=b.object("name",input.name().trim(),"contactPhone",input.contactPhone(),"education",input.education(),"skills",input.skills());
+        ObjectNode confirmed=b.object("name",input.name().trim(),"contactPhone",input.contactPhone(),"education",input.education(),"skills",input.skills(),"birthDate",input.birthDate()==null?null:input.birthDate().toString(),"workExperienceYears",input.workExperienceYears());
         ObjectNode sections=optionalSections(r);
         JsonNode previous=b.read(r.getConfirmedProfile()).path("optionalSections");
         if(previous.isObject()) sections=(ObjectNode)previous.deepCopy();
@@ -88,6 +88,7 @@ public class ResumeService {
                 sections.set(entry.getKey(),items==null||items.isEmpty()?NullNode.instance:b.json.valueToTree(items));
             }
         }
+        confirmed.set("age",b.json.valueToTree(input.age())); confirmed.put("ageAsOf",now().toLocalDate().toString());
         confirmed.set("optionalSections",sections); r.setConfirmedProfile(b.write(confirmed));
         r.setConflictStatus("RESOLVED"); resumes.updateById(r);
         Profile update=new Profile(); update.setId(p.getId()); update.setName(input.name().trim()); update.setEducation(input.education()); profiles.updateById(update);
@@ -100,7 +101,7 @@ public class ResumeService {
         if(!Set.of("SUCCESS","FAILED").contains(r.getParseStatus())) state("当前简历正在解析");
         vectors.enqueue(r,true); r.setVersion(r.getVersion()+1); r.setParseStatus("PENDING"); r.setConfirmationStatus("UNCONFIRMED"); r.setIndexStatus("NOT_READY"); r.setConflictStatus("NONE");
         UpdateWrapper<Resume> w=new UpdateWrapper<Resume>().eq("id",id);
-        for(String col:List.of("confirmed_profile","confirmed_at","parse_error","parse_started_at","parsed_name","parsed_phone","parsed_education","parsed_skills","parsed_summary","parsed_work_experience","parsed_internship_experience","parsed_project_experience","parsed_campus_experience","parsed_certificates","extracted_text","conflicts","index_error")) w.set(col,null);
+        for(String col:List.of("confirmed_profile","confirmed_at","parse_error","parse_started_at","parsed_birth_date","parsed_age","parsed_work_experience_years","parsed_name","parsed_phone","parsed_education","parsed_skills","parsed_summary","parsed_work_experience","parsed_internship_experience","parsed_project_experience","parsed_campus_experience","parsed_certificates","extracted_text","conflicts","index_error")) w.set(col,null);
         // Wrapper负责明确清空字段，实体负责更新状态和自动更新时间。
         Resume update=new Resume(); update.setVersion(r.getVersion()); update.setParseStatus("PENDING"); update.setConfirmationStatus("UNCONFIRMED"); update.setIndexStatus("NOT_READY"); update.setConflictStatus("NONE"); resumes.update(update,w);
         return accepted(r);
@@ -132,6 +133,10 @@ public class ResumeService {
                 if(fresh==null) return;
                 fresh.setParseStatus("SUCCESS"); fresh.setExtractedText(result.path("extractedText").asText()); fresh.setExtractionMethod(result.path("extractionMethod").asText()); fresh.setPageCount(result.path("pageCount").asInt());
                 fresh.setParsedName(text(result,"parsedName")); fresh.setParsedPhone(text(result,"parsedPhone")); fresh.setParsedEducation(text(result,"parsedEducation")); fresh.setParsedSummary(text(result,"parsedSummary")); fresh.setParsedSkills(result.path("parsedSkills").toString());
+                fresh.setParsedBirthDate(result.hasNonNull("parsedBirthDate") ? java.time.LocalDate.parse(result.path("parsedBirthDate").asText()) : null);
+                if(fresh.getParsedBirthDate()!=null && fresh.getParsedBirthDate().isAfter(now().toLocalDate())) PythonAiClient.invalid();
+                fresh.setParsedAge(optionalInteger(result,"parsedAge",120));
+                fresh.setParsedWorkExperienceYears(optionalInteger(result,"parsedWorkExperienceYears",60));
                 fresh.setParsedWorkExperience(optionalArray(result,"parsedWorkExperience"));
                 fresh.setParsedInternshipExperience(optionalArray(result,"parsedInternshipExperience"));
                 fresh.setParsedProjectExperience(optionalArray(result,"parsedProjectExperience"));
@@ -150,6 +155,12 @@ public class ResumeService {
         }
     }
     /** 可选经历按数组存储；兼容旧AI服务缺少字段，统一返回NULL。 */
+    /** 验证可选数字，拒绝字符串、负数和越界的模型结果。 */
+    private static Integer optionalInteger(JsonNode result,String field,int max) {
+        JsonNode n=result.path(field); if(n.isMissingNode()||n.isNull()) return null;
+        if(!n.isIntegralNumber()||!n.canConvertToInt()||n.asInt()<0||n.asInt()>max) PythonAiClient.invalid();
+        return n.asInt();
+    }
     private static String optionalArray(JsonNode result,String field) {
         JsonNode value=result.path(field);
         if(value.isMissingNode()||value.isNull()) return null;
