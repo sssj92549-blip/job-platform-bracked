@@ -310,13 +310,13 @@ Java 和 Python 的 JSON 接口均返回此信封；下文“输出”描述的�
 |---|---|---|---|---|
 | POST | `/api/ai/matches` | 求职者或企业 | 求职者：`{resumeId, resumeVersion, jobId}`；企业：`{applicationId}`，两种输入互斥 | HTTP 202，`AiTask<MatchResult>` |
 | POST | `/api/ai/interview-questions` | 求职者或企业 | 求职者：`{resumeId, resumeVersion, jobId}`；企业：`{applicationId}`，两种输入互斥 | HTTP 202，`AiTask<InterviewResult>` |
-| POST | `/api/ai/assistant` | 求职者 | `{resumeId, resumeVersion, question: string(1..2000)}` | HTTP 202，`AiTask<AssistantResult>` |
+| POST | `/api/ai/assistant` | 求职者 | `{resumeId, resumeVersion, question: string(1..2000), previousTaskId?: string}` | HTTP 202，`AiTask<AssistantResult>` |
 | GET | `/api/ai/tasks/{taskId}` | 任务创建者 | path：taskId | 按 type 返回 `AiTask<MatchResult/InterviewResult/AssistantResult>` |
 
 - 求职者仅使用本人已确认当前简历；匹配/面试题选择公开有效职位。企业仅使用自己收到的投递快照，不能凭任意 resumeId 调用。
 - 企业不可对 WITHDRAWN 投递创建新 AI 任务。任务创建时固定简历和职位版本，后续资料变更不污染结果。
-- 面试题生成只是内容生成，不创建面试安排。助手基于确认资料、技能和解析摘要回答；每次请求独立，无 history/sessionId。
-- 同创建者、类型、简历版本、职位版本、投递ID且正在执行的任务复用；助手另以 question 的哈希区分。返回已有任务时 HTTP 200。失败任务可重新 POST 创建新任务，不无限自动重试。
+- 面试题生成只是内容生成，不创建面试安排。岗位推荐助手结合确认简历与真实职位进行多轮RAG；通过previousTaskId关联本人上一条成功任务，不接受客户端提供的history。
+- 同创建者、类型、简历版本、职位版本、投递ID且正在执行的任务复用；助手另以 question 和 previousTaskId 的哈希区分。返回已有任务时 HTTP 200。失败任务可重新 POST 创建新任务，不无限自动重试。
 - 当前RestTemplate统一连接超时3秒、读取超时180秒，通过app.ai.connect-timeout/read-timeout配置；Python模型调用自身默认90秒。超时或连接失败记录FAILED，错误为50401。
 - Java 对模型结果进行结构校验：分数必须整数且 0～100，题目必须 10 道。简历文本作为数据处理，不能作为系统指令；模型不得获取文件访问、SQL 或业务写入权限。
 
@@ -817,3 +817,19 @@ DDL及幂等增量升级语句统一存放在 `docs/init.sql`。
 行业选项筛选：公开列表 industry 使用职位内容向量召回（短行业词阈值0.45），不按公司登记行业限制；keyword 阈值保持0.55。二者并存时取交集，无新增前端开关。
 
 职位筛选边界修正：experience=1_3 对应 [1,3)，3_5 对应 [3,5)，5_PLUS 对应 >=5。education 按 HIGH_SCHOOL<JUNIOR_COLLEGE<BACHELOR<MASTER<DOCTOR 包含所选等级及以上；OTHER仅匹配其他。选择等级时不包含学历不限的职位。
+
+岗位推荐问答与推荐列表：GET /api/jobs?mode=recommended 读取本人当前已确认简历，通过职位向量检索，沿用筛选与分页。相似度至少0.65且与最高分差距不超过0.08；不固定推荐数量，不返回无关职位凑数。未确认简历返回409，推荐服务不可用返回503，不回退全部职位。
+POST /api/ai/assistant 保持原请求体与异步轮询，先以问题和简历检索在招职位，再生成回答。结果为 answer 和 sources（jobId、jobVersion、title、companyName、city、salaryMin、salaryMax、reason、available）；引用必须来自检索结果，历史引用重新检查职位有效性。不写入人岗匹配分。
+Python POST /internal/vector/jobs/search 新增可选 resumeText；POST /internal/ai/recommendation-answer 接受 question、resumeText、jobs，返回 answer、recommendations[{jobId,reason}]。
+
+
+## 2026-09-15 多轮岗位推荐对话
+
+- POST /api/ai/assistant 新增可选 previousTaskId（上一轮成功任务ID）；省略表示新对话，原单轮调用兼容。任务视图增加 question、previousTaskId。
+- 会话链保存在 ai_task.input_snapshot.previousTaskId，不需要数据库迁移。问题、回答均从数据库读取；只允许引用当前求职身份本人的 ASSISTANT 成功任务，简历ID/版本必须一致。非法身份返回404，未完成/失败前序及简历版本变化返回409。MATCH/INTERVIEW不接受previousTaskId。
+- GET /api/ai/tasks/{id}/conversation 返回 {records: AiTask[], nextTaskId: string|null}；records按时间正序，每页最多50轮。nextTaskId非空时，以其再次调用相同接口加载更早消息。每条历史岗位引用重新检查可用性。
+- 模型上下文使用最近最多6轮完整问答、合计序列化长度不超过30000字符；这是模型上下文预算，不限制会话总轮数或数据库历史保存。更早记录可查看，但不保证模型记住窗口之外的内容。
+- 每次追问先调用 Python POST /internal/ai/conversation-query：输入 {question, history:[{question,answer,sources}]}，输出 {query,referencedJobIds}。将追问改写成独立检索问题，最新明确修改的条件优先。Java/Python均拒绝不属于历史引用的ID。
+- 泛推荐用改写后的query重新进行向量检索；明确指代历史岗位时读取对应职位的当前有效版本，已变更/下架的历史版本不能再次推荐。调用 /internal/ai/recommendation-answer 时传入 question、resumeText、jobs、history；历史只用于理解对话，当前jobs才是岗位事实依据。
+- 前端改为聊天气泡、一次发送、Enter发送/Shift+Enter换行、失败重试、暂停后继续查询和新建对话。浏览器仅保存按身份及简历版本隔离的最新任务ID，不保存简历及回答正文；刷新时从授权接口恢复会话及未完成任务。
+- 新建对话清除当前浏览器会话入口，不删除已保存任务；暂未提供独立历史会话列表。简历更新后使用新的会话入口，避免混用旧简历上下文。

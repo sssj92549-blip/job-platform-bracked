@@ -23,6 +23,7 @@ import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
 @Service
 public class AiTaskService {
     private final AiTaskMapper tasks;
+    private final JobRecommendationService recommendations;
     private final ResumeJobMatchMapper matches;
     private final ResumeService resumes;
     private final ApplicationService applications;
@@ -31,16 +32,56 @@ public class AiTaskService {
     private final BusinessRedis redis;
     private final PythonAiClient python;
     private final TransactionTemplate tx;
-    public AiTaskService(AiTaskMapper tasks,ResumeJobMatchMapper matches,ResumeService resumes,ApplicationService applications,JobService jobs,BusinessSupport b,BusinessRedis redis,PythonAiClient python,PlatformTransactionManager tm) {
-        this.tasks=tasks; this.matches=matches; this.resumes=resumes; this.applications=applications; this.jobs=jobs; this.b=b; this.redis=redis; this.python=python; tx=new TransactionTemplate(tm);
+    public AiTaskService(JobRecommendationService recommendations,AiTaskMapper tasks,ResumeJobMatchMapper matches,ResumeService resumes,ApplicationService applications,JobService jobs,BusinessSupport b,BusinessRedis redis,PythonAiClient python,PlatformTransactionManager tm) {
+        this.recommendations=recommendations; this.tasks=tasks; this.matches=matches; this.resumes=resumes; this.applications=applications; this.jobs=jobs; this.b=b; this.redis=redis; this.python=python; tx=new TransactionTemplate(tm);
     }
     public record Submission(boolean reused,ObjectNode task) {}
     public ObjectNode view(AiTask t) {
-        ObjectNode out=b.view(t,"creatorId","question","requestKey","inputSnapshot","startedAt","updatedAt"); out.set("result",b.read(t.getResult())); return out;
+        ObjectNode out=b.view(t,"creatorId","question","requestKey","inputSnapshot","startedAt","updatedAt"); out.set("result",b.read(t.getResult()));
+        if("ASSISTANT".equals(t.getType())) {
+            recommendations.refreshSources(out.path("result"));
+            out.put("question",t.getQuestion());
+            out.set("previousTaskId",b.read(t.getInputSnapshot()).path("previousTaskId"));
+        }
+        return out;
     }
     public ObjectNode get(Long id,HttpServletRequest request) {
         Profile p=b.actor(request,"JOB_SEEKER","COMPANY"); AiTask t=tasks.selectById(id);
         if(t==null||!t.getCreatorId().equals(p.getId())) missing(); return view(t);
+    }
+    private AiTask ownAssistant(Long id,Long owner) {
+        AiTask task=tasks.selectById(id);
+        if(task==null||!task.getCreatorId().equals(owner)||!"ASSISTANT".equals(task.getType())) missing();
+        return task;
+    }
+    private Long previous(AiTask task) {
+        JsonNode id=b.read(task.getInputSnapshot()).path("previousTaskId");
+        return id.isMissingNode()||id.isNull()?null:Long.valueOf(id.asText());
+    }
+    /** 分页读取数据库中的会话链，客户端不能伪造助手历史。 */
+    public ObjectNode conversation(Long id,HttpServletRequest request) {
+        Profile p=b.actor(request,"JOB_SEEKER");
+        List<ObjectNode> records=new ArrayList<>(); Set<Long> seen=new HashSet<>();
+        while(id!=null&&records.size()<50) {
+            if(!seen.add(id)) state("会话记录异常");
+            AiTask task=ownAssistant(id,p.getId()); records.add(view(task)); id=previous(task);
+        }
+        Collections.reverse(records);
+        return b.object("records",records,"nextTaskId",id==null?null:id.toString());
+    }
+    private ArrayNode history(Long id,AiTask current) {
+        List<ObjectNode> turns=new ArrayList<>(); int length=0; Set<Long> seen=new HashSet<>();
+        while(id!=null&&turns.size()<6) {
+            if(!seen.add(id)) state("会话记录异常");
+            AiTask task=ownAssistant(id,current.getCreatorId());
+            if(!Objects.equals(task.getResumeId(),current.getResumeId())||!Objects.equals(task.getResumeVersion(),current.getResumeVersion())) state("简历已更新，请开始新对话");
+            if(!"SUCCESS".equals(task.getStatus())) state("请等待上一条回答完成，失败后请重试");
+            JsonNode result=b.read(task.getResult());
+            ObjectNode turn=b.object("question",task.getQuestion(),"answer",result.path("answer"),"sources",result.path("sources"));
+            length+=turn.toString().length(); if(length>30000) break;
+            turns.add(turn); id=previous(task);
+        }
+        Collections.reverse(turns); ArrayNode out=b.json.createArrayNode(); turns.forEach(out::add); return out;
     }
     public Submission create(String type,AiInput input,HttpServletRequest request) {
         Profile p=b.actor(request,"JOB_SEEKER","COMPANY");
@@ -50,6 +91,7 @@ public class AiTaskService {
         finally { redis.unlock(key,token); }
     }
     private Submission build(Profile p,String type,AiInput input) {
+        if(!"ASSISTANT".equals(type)&&input.previousTaskId()!=null) bad("仅岗位推荐对话接受previousTaskId");
         AiTask task=new AiTask(); task.setCreatorId(p.getId()); task.setType(type); task.setStatus("PENDING");
         JsonNode confirmed; String resumeText; String summary=null; ObjectNode job=null;
         if("COMPANY".equals(p.getRole())) {
@@ -69,14 +111,17 @@ public class AiTaskService {
             }
         }
         ObjectNode payload;
-        if("ASSISTANT".equals(type)) payload=b.object("question",task.getQuestion(),"profile",b.object("name",confirmed.path("name"),"education",confirmed.path("education"),"skills",confirmed.path("skills"),"summary",summary));
+        if("ASSISTANT".equals(type)) {
+            payload=b.object("question",task.getQuestion(),"resumeText",recommendations.context(confirmed),"history",history(input.previousTaskId(),task));
+            if(input.previousTaskId()!=null) payload.put("previousTaskId",input.previousTaskId().toString());
+        }
         else {
             String text="已确认资料："+confirmed+"\n简历原文：\n"+resumeText;
             if(text.length()>60000) bad("简历和确认资料合计超过60000字，请精简后重试");
             payload=b.object("resumeText",text,"job",job); if("INTERVIEW".equals(type)) payload.put("count",10);
         }
         task.setInputSnapshot(b.write(payload));
-        task.setRequestKey(hash(p.getId()+":"+type+":"+task.getResumeId()+":"+task.getResumeVersion()+":"+task.getJobId()+":"+task.getJobVersion()+":"+task.getApplicationId()+":"+task.getQuestion()));
+        task.setRequestKey(hash(p.getId()+":"+type+":"+task.getResumeId()+":"+task.getResumeVersion()+":"+task.getJobId()+":"+task.getJobVersion()+":"+task.getApplicationId()+":"+task.getQuestion()+":"+input.previousTaskId()));
         AiTask existing=tasks.selectOne(new QueryWrapper<AiTask>().eq("request_key",task.getRequestKey()).in("status","PENDING","PROCESSING").last("LIMIT 1"));
         if(existing!=null) return new Submission(true,view(existing));
         if(tasks.selectCount(new QueryWrapper<AiTask>().eq("creator_id",p.getId()).in("status","PENDING","PROCESSING"))>=3) state("最多同时执行3个AI任务，请等待完成");
@@ -94,7 +139,11 @@ public class AiTaskService {
         if(tasks.update(t,new UpdateWrapper<AiTask>().eq("id",t.getId()).eq("status","PENDING"))!=1) return;
         try {
             String path=switch(t.getType()) { case "MATCH"->"match"; case "INTERVIEW"->"interview-questions"; default->"assistant"; };
-            JsonNode result=python.call(HttpMethod.POST,"/internal/ai/"+path,b.read(t.getInputSnapshot())); validate(t.getType(),result);
+            JsonNode input=b.read(t.getInputSnapshot());
+            JsonNode result="ASSISTANT".equals(t.getType())
+                ? recommendations.answer(input.path("question").asText(),input.hasNonNull("resumeText")?input.path("resumeText").asText():recommendations.context(input.path("profile")),input.path("history"))
+                : python.call(HttpMethod.POST,"/internal/ai/"+path,input);
+            validate(t.getType(),result);
             tx.executeWithoutResult(s->{
                 AiTask fresh=tasks.selectOne(new QueryWrapper<AiTask>().eq("id",t.getId()).eq("status","PROCESSING").last("FOR UPDATE")); if(fresh==null) return;
                 fresh.setStatus("SUCCESS"); fresh.setResult(result.toString()); fresh.setCompletedAt(now()); tasks.updateById(fresh);

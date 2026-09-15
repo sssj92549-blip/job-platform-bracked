@@ -37,6 +37,10 @@ public final class RecruitmentRequests {
     public record Enabled(@NotNull Boolean enabled, @NotBlank @Size(max=500) String reason) {}
     public record Reason(@NotBlank @Size(max=500) String reason) {}
     public record AiInput(@Positive Long applicationId, @Positive Long resumeId,
-        @Min(1) Integer resumeVersion, @Positive Long jobId, @Size(min=1,max=2000) String question) {}
+        @Min(1) Integer resumeVersion, @Positive Long jobId, @Size(min=1,max=2000) String question, @Positive Long previousTaskId) {
+        public AiInput(Long applicationId,Long resumeId,Integer resumeVersion,Long jobId,String question) {
+            this(applicationId,resumeId,resumeVersion,jobId,question,null);
+        }
+    }
     public record Talent(@Min(1) @Max(50) Integer topK, @DecimalMin("0") @DecimalMax("1") Double minSimilarity) {}
 }

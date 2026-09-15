@@ -21,6 +21,8 @@ public class AiController {
     public ResponseEntity<?> assistant(@Valid @RequestBody AiInput input,HttpServletRequest request) { return accepted(service.create("ASSISTANT",input,request)); }
     @GetMapping("/api/ai/tasks/{id}")
     public ResponseEntity<?> task(@PathVariable Long id,HttpServletRequest request) { return ResponseEntity.ok(ApiResponse.success(service.get(id,request))); }
+    @GetMapping("/api/ai/tasks/{id}/conversation")
+    public ResponseEntity<?> conversation(@PathVariable Long id,HttpServletRequest request) { return ResponseEntity.ok(ApiResponse.success(service.conversation(id,request))); }
     private ResponseEntity<?> accepted(AiTaskService.Submission submission) {
         return ResponseEntity.status(submission.reused()?200:202).body(ApiResponse.success(submission.task()));
     }

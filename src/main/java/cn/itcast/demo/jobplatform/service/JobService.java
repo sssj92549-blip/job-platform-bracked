@@ -17,6 +17,7 @@ import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
 @Service
 public class JobService {
     private final JobMapper jobs;
+    private final JobRecommendationService recommendations;
     private final JobVectorService vectors;
     private final ProfileRepository profiles;
     private final ApplicationMapper applications;
@@ -24,8 +25,8 @@ public class JobService {
     private final BusinessRedis redis;
     private final AuditService audit;
     private static final String PUBLIC_COMPANIES="select p.id from profile_details p join account a on a.id=p.account_id where p.role='COMPANY' and p.enabled=1 and a.enabled=1 and p.review_status='APPROVED'";
-    public JobService(JobVectorService vectors,JobMapper jobs,ProfileRepository profiles,ApplicationMapper applications,BusinessSupport b,BusinessRedis redis,AuditService audit) {
-        this.vectors=vectors; this.jobs=jobs; this.profiles=profiles; this.applications=applications; this.b=b; this.redis=redis; this.audit=audit;
+    public JobService(JobRecommendationService recommendations,JobVectorService vectors,JobMapper jobs,ProfileRepository profiles,ApplicationMapper applications,BusinessSupport b,BusinessRedis redis,AuditService audit) {
+        this.recommendations=recommendations; this.vectors=vectors; this.jobs=jobs; this.profiles=profiles; this.applications=applications; this.b=b; this.redis=redis; this.audit=audit;
     }
     public Job require(Long id,boolean lock) {
         Job j=jobs.selectOne(new QueryWrapper<Job>().eq("id",id).last(lock?"FOR UPDATE":""));
@@ -102,9 +103,30 @@ public class JobService {
         if(q.containsKey("salaryMin")) w.ge("salary_max",number(q,"salaryMin",0,0,1000000));
         if(q.containsKey("salaryMax")) w.le("salary_min",number(q,"salaryMax",0,0,1000000));
         if(q.containsKey("salaryMin")&&q.containsKey("salaryMax") && Integer.parseInt(q.get("salaryMin"))>Integer.parseInt(q.get("salaryMax"))) bad("薪资下限不能大于上限");
+        if("PUBLIC".equals(scope)&&"recommended".equals(q.get("mode"))) return recommended(q,w,request,keyword);
         if("PUBLIC".equals(scope)&&((keyword!=null&&!keyword.isBlank())||(q.get("industry")!=null&&!q.get("industry").isBlank()))) return hybrid(q,w,keyword);
         Page<Job> page=jobs.selectPage(new Page<>(page(q),size(q)),w.orderByDesc("created_at","id"));
         return new PageResult<>(page.getRecords().stream().map(j->view(j,"PUBLIC".equals(scope))).toList(),page.getTotal(),page.getCurrent(),page.getSize());
+    }
+    /** 推荐tab沿用全部筛选条件，按本人已确认简历的向量相似度分页。 */
+    private PageResult<ObjectNode> recommended(Map<String,String> q,QueryWrapper<Job> w,HttpServletRequest request,String keyword) {
+        String context=recommendations.currentContext(request);
+        List<Job> allowed=jobs.selectList(w.clone().orderByDesc("id").last("LIMIT 10001"));
+        if(allowed.size()>10000) state("请先缩小筛选范围");
+        Map<Long,Double> scores=recommendations.rank(context,allowed);
+        String industry=trim(q.get("industry"));
+        if(industry!=null&&!industry.isBlank()) scores.keySet().retainAll(rank(industry,allowed,false).keySet());
+        if(keyword!=null&&!keyword.isBlank()) { if(keyword.length()>200) bad("搜索词最多200字"); scores.keySet().retainAll(rank(keyword,allowed,true).keySet()); }
+        Map<Long,Integer> versions=new HashMap<>(); for(Job j:allowed) versions.put(j.getId(),j.getVersion());
+        List<Job> current=new ArrayList<>(jobs.selectList(w.clone()));
+        current.removeIf(j->!scores.containsKey(j.getId())||!Objects.equals(versions.get(j.getId()),j.getVersion()));
+        current.sort(Comparator.<Job>comparingDouble(j->scores.get(j.getId())).reversed().thenComparing(Job::getId));
+        // 推荐是精选结果，不把整库达到宽泛召回阈值的职位全部列出。
+        if(!current.isEmpty()) {
+            double cutoff=Math.max(0.65,scores.get(current.get(0).getId())-0.08);
+            current.removeIf(j->scores.get(j.getId())<cutoff);
+        }
+        return new PageResult<>(current.stream().skip((page(q)-1)*size(q)).limit(size(q)).map(j->view(j,true)).toList(),current.size(),page(q),size(q));
     }
     /** 先应用业务筛选，再融合字面与向量命中；最后复查状态并分页。 */
     private PageResult<ObjectNode> hybrid(Map<String,String> q,QueryWrapper<Job> w,String keyword) {

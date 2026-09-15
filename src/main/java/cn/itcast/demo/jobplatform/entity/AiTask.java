@@ -46,7 +46,7 @@ public class AiTask extends BaseEntity {
     public Integer getJobVersion() { return jobVersion; }
     public void setJobVersion(Integer value) { this.jobVersion = value; }
 
-    /** 助手单次问题，不保存会话历史。 */
+    /** 当前轮问题；inputSnapshot.previousTaskId串联持久化会话历史。 */
     private String question;
     public String getQuestion() { return question; }
     public void setQuestion(String value) { this.question = value; }

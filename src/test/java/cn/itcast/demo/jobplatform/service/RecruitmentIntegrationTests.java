@@ -107,6 +107,87 @@ class RecruitmentIntegrationTests {
         send("POST","/api/company/jobs/"+j.getId()+"/index-retry",company,null).andExpect(status().isAccepted());
         assertThat(jobVectors.latest(j.getId()).get("status")).isEqualTo("PENDING");
     }
+    @Test void recommendedJobsRequireOwnConfirmedResumeAndKeepCityFilter() throws Exception {
+        Job j=job();
+        send("GET","/api/jobs?mode=recommended",seeker,null).andExpect(status().isConflict());
+        resume();
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),any())).thenReturn(json.readTree("{\"matches\":[{\"jobId\":\""+j.getId()+"\",\"jobVersion\":1,\"similarity\":0.8}]}"));
+        send("GET","/api/jobs?mode=recommended",seeker,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        send("GET","/api/jobs?mode=recommended&city=北京",seeker,null).andExpect(jsonPath("$.data.total").value(0));
+        send("GET","/api/jobs?mode=recommended",company,null).andExpect(status().isForbidden());
+    }
+    @Test void recommendationsKeepAllRelevantJobsWithoutFixedCount() throws Exception {
+        resume();
+        var retrieved=json.createArrayNode();
+        for(int i=0;i<25;i++) {
+            Job j=job();
+            retrieved.addObject().put("jobId",j.getId().toString()).put("jobVersion",1).put("similarity",0.85);
+        }
+        Job weak=job();
+        retrieved.addObject().put("jobId",weak.getId().toString()).put("jobVersion",1).put("similarity",0.68);
+        var result=json.createObjectNode().set("matches",retrieved);
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),any())).thenReturn(result);
+        send("GET","/api/jobs?mode=recommended",seeker,null).andExpect(jsonPath("$.data.total").value(25));
+    }
+    @Test void ragAssistantCitesRetrievedJobAndMarksLaterClosure() throws Exception {
+        Job j=job(); Resume r=resume();
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),any())).thenReturn(json.readTree("{\"matches\":[{\"jobId\":\""+j.getId()+"\",\"jobVersion\":1,\"similarity\":0.8}]}"));
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/recommendation-answer"),any())).thenReturn(json.readTree("{\"answer\":\"可以关注以下职位\",\"recommendations\":[{\"jobId\":\""+j.getId()+"\",\"reason\":\"Java技能符合要求\"}]}"));
+        String id=data(send("POST","/api/ai/assistant",seeker,new AiInput(null,r.getId(),1,null,"我适合什么岗位"))).path("id").asText();
+        ai.processOne();
+        send("GET","/api/ai/tasks/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("SUCCESS")).andExpect(jsonPath("$.data.result.sources[0].jobId").value(j.getId().toString())).andExpect(jsonPath("$.data.result.sources[0].available").value(true));
+        j.setStatus("CLOSED"); jobs.updateById(j);
+        send("GET","/api/ai/tasks/"+id,seeker,null).andExpect(jsonPath("$.data.result.sources[0].available").value(false));
+        assertThat(matches.selectCount(null)).isZero();
+    }
+    @Test void conversationUsesOwnedHistoryResolvesReferencesAndRestoresTurns() throws Exception {
+        Job j=job(); Resume r=resume();
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),any())).thenReturn(json.readTree("{\"matches\":[{\"jobId\":\""+j.getId()+"\",\"jobVersion\":1,\"similarity\":0.8}]}"));
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/recommendation-answer"),any())).thenReturn(json.readTree("{\"answer\":\"推荐Java职位\",\"recommendations\":[{\"jobId\":\""+j.getId()+"\",\"reason\":\"技能相符\"}]}"));
+        Long first=Long.valueOf(data(send("POST","/api/ai/assistant",seeker,new AiInput(null,r.getId(),1,null,"推荐Java岗位"))).path("id").asText());
+        send("POST","/api/ai/assistant",seeker,new AiInput(null,r.getId(),1,null,"哪个薪资高",first)).andExpect(status().isConflict());
+        ai.processOne();
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/conversation-query"),any())).thenReturn(json.readTree("{\"query\":\"比较推荐的Java岗位薪资\",\"referencedJobIds\":[\""+j.getId()+"\"]}"));
+        Long second=Long.valueOf(data(send("POST","/api/ai/assistant",seeker,new AiInput(null,r.getId(),1,null,"这些哪个薪资高",first))).path("id").asText());
+        ai.processOne();
+        send("GET","/api/ai/tasks/"+second+"/conversation",seeker,null)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.records.length()").value(2))
+            .andExpect(jsonPath("$.data.records[0].question").value("推荐Java岗位"))
+            .andExpect(jsonPath("$.data.records[1].status").value("SUCCESS"))
+            .andExpect(jsonPath("$.data.records[1].previousTaskId").value(first.toString()));
+        verify(python).call(eq(HttpMethod.POST),eq("/internal/ai/conversation-query"),argThat(n->n instanceof JsonNode x && x.path("history").get(0).path("answer").asText().equals("推荐Java职位")));
+        verify(python,times(1)).call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),any());
+        Profile stranger=profile("JOB_SEEKER");
+        send("GET","/api/ai/tasks/"+second+"/conversation",stranger,null).andExpect(status().isNotFound());
+        AiTask foreign=new AiTask(); foreign.setCreatorId(stranger.getId()); foreign.setType("ASSISTANT"); foreign.setStatus("FAILED"); foreign.setQuestion("私密问题"); foreign.setResumeId(r.getId()); foreign.setResumeVersion(1); foreign.setRequestKey("foreign-chat-test"); foreign.setInputSnapshot("{}"); tasks.insert(foreign);
+        send("POST","/api/ai/assistant",seeker,new AiInput(null,r.getId(),1,null,"继续",foreign.getId())).andExpect(status().isNotFound());
+        // 历史引用下架后不可重新推荐。
+        j.setStatus("CLOSED"); jobs.updateById(j);
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/recommendation-answer"),any())).thenReturn(json.readTree("{\"answer\":\"该职位已不可用\",\"recommendations\":[]}"));
+        Long third=Long.valueOf(data(send("POST","/api/ai/assistant",seeker,new AiInput(null,r.getId(),1,null,"这个还在招吗",second))).path("id").asText()); ai.processOne();
+        send("GET","/api/ai/tasks/"+third,seeker,null).andExpect(jsonPath("$.data.status").value("SUCCESS")).andExpect(jsonPath("$.data.result.sources").isEmpty());
+        verify(python).call(eq(HttpMethod.POST),eq("/internal/ai/recommendation-answer"),argThat(n->n instanceof JsonNode x && x.path("history").size()==2 && x.path("jobs").isEmpty()));
+        r.setVersion(2); resumes.updateById(r);
+        send("POST","/api/ai/assistant",seeker,new AiInput(null,r.getId(),2,null,"继续",second)).andExpect(status().isConflict());
+    }
+    @Test void conversationRejectsInventedReferencesAndRetrievesRewrittenQuestion() throws Exception {
+        Job j=job(); Resume r=resume();
+        AiTask parent=new AiTask(); parent.setCreatorId(seeker.getId()); parent.setType("ASSISTANT"); parent.setStatus("SUCCESS"); parent.setResumeId(r.getId()); parent.setResumeVersion(1); parent.setQuestion("推荐Java岗位"); parent.setResult("{\"answer\":\"暂未找到\",\"sources\":[]}"); parent.setInputSnapshot("{}"); parent.setRequestKey("parent-chat-test"); parent.setCompletedAt(BusinessSupport.now()); tasks.insert(parent);
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/conversation-query"),any())).thenReturn(json.readTree("{\"query\":\"杭州Java岗位\",\"referencedJobIds\":[]}"));
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),any())).thenReturn(json.readTree("{\"matches\":[]}"));
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/recommendation-answer"),any())).thenReturn(json.readTree("{\"answer\":\"暂未找到\",\"recommendations\":[]}"));
+        send("POST","/api/ai/assistant",seeker,new AiInput(null,r.getId(),1,null,"只看杭州的",parent.getId())).andExpect(status().isAccepted()); ai.processOne();
+        verify(python).call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),argThat(n->n instanceof JsonNode x && x.path("queryText").asText().equals("杭州Java岗位")));
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/conversation-query"),any())).thenReturn(json.readTree("{\"query\":\"其他职位\",\"referencedJobIds\":[\""+j.getId()+"\"]}"));
+        String id=data(send("POST","/api/ai/assistant",seeker,new AiInput(null,r.getId(),1,null,"第二个呢",parent.getId()))).path("id").asText(); ai.processOne();
+        send("GET","/api/ai/tasks/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("FAILED"));
+    }
+    @Test void remoteRagDoesNotInventRemoteJobs() throws Exception {
+        job(); Resume r=resume();
+        String id=data(send("POST","/api/ai/assistant",seeker,new AiInput(null,r.getId(),1,null,"有没有远程岗位"))).path("id").asText(); ai.processOne();
+        send("GET","/api/ai/tasks/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("SUCCESS")).andExpect(jsonPath("$.data.result.sources").isEmpty());
+        verify(python,never()).call(eq(HttpMethod.POST),eq("/internal/ai/recommendation-answer"),any());
+    }
     @Test void selectedIndustrySearchesJobsAcrossCompanyIndustries() throws Exception {
         Job j=job(); company.setIndustry("汽车制造"); profiles.updateById(company);
         when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),argThat(n->n instanceof JsonNode node && node.path("queryText").asText().equals("互联网")))).thenReturn(json.readTree("{\"matches\":[{\"jobId\":\""+j.getId()+"\",\"jobVersion\":1,\"similarity\":0.8}]}"));
