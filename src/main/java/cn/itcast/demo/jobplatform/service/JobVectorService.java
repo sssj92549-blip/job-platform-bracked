@@ -75,16 +75,17 @@ public class JobVectorService {
         }
     }
     /** 返回全量白名单内命中，交由Java复核、融合排序后分页，避免先分页导致漏召回。 */
-    public Map<Long,Double> search(String keyword,List<Job> allowed) {
+    public Map<Long,Double> search(String keyword,List<Job> allowed) { return search(keyword,allowed,0.55); }
+    public Map<Long,Double> search(String keyword,List<Job> allowed,double minimum) {
         Map<Long,Double> found=new HashMap<>(); if(allowed.isEmpty()) return found;
         var refs=b.json.createArrayNode(); Map<Long,Integer> versions=new HashMap<>();
         for(Job j:allowed) { refs.add(b.object("jobId",j.getId().toString(),"jobVersion",j.getVersion())); versions.put(j.getId(),j.getVersion()); }
         try {
-            JsonNode result=python.call(HttpMethod.POST,"/internal/vector/jobs/search",b.object("queryText",keyword,"eligibleJobs",refs,"minSimilarity",0.55));
+            JsonNode result=python.call(HttpMethod.POST,"/internal/vector/jobs/search",b.object("queryText",keyword,"eligibleJobs",refs,"minSimilarity",minimum));
             if(result==null||!result.path("matches").isArray()) return found;
             for(JsonNode item:result.path("matches")) {
                 Long id=Long.valueOf(item.path("jobId").asText()); double score=item.path("similarity").asDouble(-1);
-                if(Objects.equals(versions.get(id),item.path("jobVersion").asInt())&&Double.isFinite(score)&&score>=0.55&&score<=1) found.put(id,score);
+                if(Objects.equals(versions.get(id),item.path("jobVersion").asInt())&&Double.isFinite(score)&&score>=minimum&&score<=1) found.put(id,score);
             }
         } catch(Exception e) { org.slf4j.LoggerFactory.getLogger(getClass()).warn("Job vector search unavailable; using keyword search"); }
         return found;

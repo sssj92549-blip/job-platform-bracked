@@ -73,10 +73,18 @@ public class JobService {
         String keyword=trim(q.get("keyword"));
         if(!"PUBLIC".equals(scope) && keyword!=null && !keyword.isEmpty()) w.and(n->n.like("title",keyword).or().apply("company_id in (select id from profile_details where company_name like {0})","%"+keyword+"%"));
         if(q.containsKey("city")&&!q.get("city").isBlank()) w.eq("city",q.get("city"));
-        if(q.containsKey("education")&&!q.get("education").isBlank()) w.eq("education_requirement",q.get("education"));
+        if(q.containsKey("education")&&!q.get("education").isBlank()) {
+            String education=q.get("education");
+            List<String> levels=List.of("HIGH_SCHOOL","JUNIOR_COLLEGE","BACHELOR","MASTER","DOCTOR");
+            if("OTHER".equals(education)) w.eq("education_requirement","OTHER");
+            else {
+                int minimum=levels.indexOf(education); if(minimum<0) bad("学历筛选无效");
+                w.in("education_requirement",levels.subList(minimum,levels.size()));
+            }
+        }
         if(q.containsKey("industry")&&!q.get("industry").isBlank()) {
             if(q.get("industry").length()>100) bad("行业筛选最多100字");
-            w.apply("company_id in (select id from profile_details where industry like {0})","%"+q.get("industry").trim()+"%");
+            if(!"PUBLIC".equals(scope)) w.apply("company_id in (select id from profile_details where industry like {0})","%"+q.get("industry").trim()+"%");
         }
         if(q.containsKey("companySize")&&!q.get("companySize").isBlank()) {
             if(!Set.of("UNDER_20","20_99","100_499","500_999","1000_9999","10000_PLUS").contains(q.get("companySize"))) bad("公司规模无效");
@@ -85,36 +93,51 @@ public class JobService {
         if(q.containsKey("experience")&&!q.get("experience").isBlank()) {
             switch(q.get("experience")) {
                 case "ENTRY" -> w.eq("experience_min_years",0);
-                case "1_3" -> w.between("experience_min_years",1,3);
-                case "3_5" -> w.gt("experience_min_years",3).le("experience_min_years",5);
-                case "5_PLUS" -> w.gt("experience_min_years",5);
+                case "1_3" -> w.ge("experience_min_years",1).lt("experience_min_years",3);
+                case "3_5" -> w.ge("experience_min_years",3).lt("experience_min_years",5);
+                case "5_PLUS" -> w.ge("experience_min_years",5);
                 default -> bad("工作经验筛选无效");
             }
         }
         if(q.containsKey("salaryMin")) w.ge("salary_max",number(q,"salaryMin",0,0,1000000));
         if(q.containsKey("salaryMax")) w.le("salary_min",number(q,"salaryMax",0,0,1000000));
         if(q.containsKey("salaryMin")&&q.containsKey("salaryMax") && Integer.parseInt(q.get("salaryMin"))>Integer.parseInt(q.get("salaryMax"))) bad("薪资下限不能大于上限");
-        if("PUBLIC".equals(scope)&&keyword!=null&&!keyword.isBlank()) return hybrid(q,w,keyword);
+        if("PUBLIC".equals(scope)&&((keyword!=null&&!keyword.isBlank())||(q.get("industry")!=null&&!q.get("industry").isBlank()))) return hybrid(q,w,keyword);
         Page<Job> page=jobs.selectPage(new Page<>(page(q),size(q)),w.orderByDesc("created_at","id"));
         return new PageResult<>(page.getRecords().stream().map(j->view(j,"PUBLIC".equals(scope))).toList(),page.getTotal(),page.getCurrent(),page.getSize());
     }
     /** 先应用业务筛选，再融合字面与向量命中；最后复查状态并分页。 */
     private PageResult<ObjectNode> hybrid(Map<String,String> q,QueryWrapper<Job> w,String keyword) {
-        if(keyword.length()>200) bad("搜索词最多200字");
+        if(keyword!=null&&keyword.length()>200) bad("搜索词最多200字");
         List<Job> eligible=jobs.selectList(w.clone().orderByDesc("created_at","id").last("LIMIT 10001"));
         if(eligible.size()>10000) state("请先按城市或行业缩小搜索范围");
-        Map<Long,Double> scores=vectors.search(keyword,eligible); String needle=keyword.toLowerCase(Locale.ROOT);
-        for(Job j:eligible) {
-            Profile company=profiles.selectById(j.getCompanyId());
-            String title=j.getTitle().toLowerCase(Locale.ROOT);
-            String content=(j.getTitle()+" "+j.getDescription()+" "+j.getRequirements()+" "+j.getSkills()+" "+(company==null?"":company.getCompanyName())).toLowerCase(Locale.ROOT);
-            if(content.contains(needle)) scores.merge(j.getId(),title.equals(needle)?3.0:title.contains(needle)?2.0:1.0,Double::sum);
+        String industry=trim(q.get("industry"));
+        boolean hasIndustry=industry!=null&&!industry.isBlank();
+        Map<Long,Double> scores=hasIndustry?rank(industry,eligible,false):new HashMap<>();
+        if(keyword!=null&&!keyword.isBlank()) {
+            Map<Long,Double> keywordScores=rank(keyword,eligible,true);
+            if(hasIndustry) {
+                scores.keySet().retainAll(keywordScores.keySet());
+                scores.replaceAll((id,score)->score+keywordScores.get(id));
+            } else scores.putAll(keywordScores);
         }
-        List<Job> current=jobs.selectList(w.clone());
+        List<Job> current=new ArrayList<>(jobs.selectList(w.clone()));
         current.removeIf(j->!scores.containsKey(j.getId())||eligible.stream().noneMatch(old->old.getId().equals(j.getId())&&old.getVersion().equals(j.getVersion())));
         current.sort(Comparator.<Job>comparingDouble(j->scores.get(j.getId())).reversed().thenComparing(Job::getId,Comparator.reverseOrder()));
         long start=(page(q)-1)*size(q);
         return new PageResult<>(current.stream().skip(start).limit(size(q)).map(j->view(j,true)).toList(),current.size(),page(q),size(q));
+    }
+    /** 行业选项检索岗位内容；公司名称仅参与搜索框的关键词匹配。 */
+    private Map<Long,Double> rank(String query,List<Job> eligible,boolean includeCompany) {
+        Map<Long,Double> scores=vectors.search(query,eligible,includeCompany?0.55:0.45);
+        String needle=query.toLowerCase(Locale.ROOT);
+        for(Job j:eligible) {
+            String title=j.getTitle().toLowerCase(Locale.ROOT);
+            String content=j.getTitle()+" "+j.getDescription()+" "+j.getRequirements()+" "+j.getSkills();
+            if(includeCompany) { Profile company=profiles.selectById(j.getCompanyId()); if(company!=null) content+=" "+company.getCompanyName(); }
+            if(content.toLowerCase(Locale.ROOT).contains(needle)) scores.merge(j.getId(),title.equals(needle)?3.0:title.contains(needle)?2.0:1.0,Double::sum);
+        }
+        return scores;
     }
     @Transactional
     public ObjectNode retryIndex(Long id,HttpServletRequest request) {

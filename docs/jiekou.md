@@ -802,3 +802,18 @@ DDL及幂等增量升级语句统一存放在 `docs/init.sql`。
 - 仅上传/解析简历时没有目标职位，不进行无目标的人岗评分。求职者手动 AI 接口继续可用。
 - 企业端不展示状态列及手动匹配/面试题工具、简历全文展开。求职者端投递状态和 AI 功能不变。
 - 新增列的可重复增量迁移见 init.sql 末尾。旧投递快照不自动修改；重新解析并确认可补充后续投递资料。
+
+
+### 职位向量生命周期与行业语义筛选
+- GET /api/jobs 的 industry 参数在求职者公开列表中表示岗位语义方向：所选行业与职位名称、职责、要求及技能进行向量检索，不限制招聘公司的登记行业。无行业选项时不进行行业检索。
+- keyword 继续混合检索。两者同时填写时取两组结果交集；城市、薪资、学历、经验、公司规模和 companyId 继续精确筛选。先过滤再召回、融合排序和分页；返回前复查职位公开状态与版本。
+- 语义相似度最低0.55，相关性并非专业分类保证；向量服务失败时退回岗位文本关键词匹配。行业匹配不使用公司名称。
+- 职位发布同事务创建 job_vector_task，后台异步 UPSERT；关闭、下架、删除创建 DELETE。每个职位任务串行处理，失败最多自动尝试3次，超时处理中任务可恢复。
+- 每分钟补建已发布历史职位索引并补偿企业禁用/恢复。草稿不建向量；新版本发布后删除旧版本并写入新版本。SQL见 init.sql 末尾。
+- 企业职位接口新增 indexStatus、indexError。POST /api/company/jobs/{id}/index-retry：无请求体，企业归属校验后重试失败索引，返回202和职位数据。
+- Python新增 PUT/DELETE /internal/vector/jobs/{jobId}/versions/{jobVersion}，写入请求为 {"text":"职位名称、职责、要求及技能"}；POST /internal/vector/jobs/search 请求为 {"queryText":"互联网","eligibleJobs":[{"jobId":"1","jobVersion":1}],"minSimilarity":0.55}，响应data.matches含jobId、jobVersion、similarity。
+- Chroma职位独立集合由 default.yml 的 embedding.job_collection 配置，复用本地Embedding模型，不调用DeepSeek生成评分。
+
+行业选项筛选：公开列表 industry 使用职位内容向量召回（短行业词阈值0.45），不按公司登记行业限制；keyword 阈值保持0.55。二者并存时取交集，无新增前端开关。
+
+职位筛选边界修正：experience=1_3 对应 [1,3)，3_5 对应 [3,5)，5_PLUS 对应 >=5。education 按 HIGH_SCHOOL<JUNIOR_COLLEGE<BACHELOR<MASTER<DOCTOR 包含所选等级及以上；OTHER仅匹配其他。选择等级时不包含学历不限的职位。

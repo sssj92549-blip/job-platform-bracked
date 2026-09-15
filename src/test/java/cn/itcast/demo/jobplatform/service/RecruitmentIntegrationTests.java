@@ -107,6 +107,14 @@ class RecruitmentIntegrationTests {
         send("POST","/api/company/jobs/"+j.getId()+"/index-retry",company,null).andExpect(status().isAccepted());
         assertThat(jobVectors.latest(j.getId()).get("status")).isEqualTo("PENDING");
     }
+    @Test void selectedIndustrySearchesJobsAcrossCompanyIndustries() throws Exception {
+        Job j=job(); company.setIndustry("汽车制造"); profiles.updateById(company);
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),argThat(n->n instanceof JsonNode node && node.path("queryText").asText().equals("互联网")))).thenReturn(json.readTree("{\"matches\":[{\"jobId\":\""+j.getId()+"\",\"jobVersion\":1,\"similarity\":0.8}]}"));
+        send("GET","/api/jobs?industry=互联网",seeker,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        send("GET","/api/jobs?industry=互联网&city=北京",seeker,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        send("GET","/api/jobs?industry=互联网&keyword=不存在的职位",seeker,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        send("GET","/api/jobs?industry=互联网&keyword=Java",seeker,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+    }
     @Test void hybridSearchUsesSemanticMatchesAndRetainsFilters() throws Exception {
         Job j=job(); j.setTitle("后端工程师"); j.setRequirements("熟悉事务与接口设计"); jobs.updateById(j);
         when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),any())).thenReturn(json.readTree("{\"matches\":[{\"jobId\":\""+j.getId()+"\",\"jobVersion\":1,\"similarity\":0.8},{\"jobId\":\"999\",\"jobVersion\":1,\"similarity\":1}]}"));
@@ -235,9 +243,18 @@ class RecruitmentIntegrationTests {
         send("GET","/api/company/jobs",other,null).andExpect(jsonPath("$.data.total").value(0));
         send("GET","/api/admin/jobs?companyId="+company.getId(),admin,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
     }
+    @Test void jobFiltersRespectExperienceBoundariesAndMinimumEducation() throws Exception {
+        for(int years:new int[]{1,2,3,4,5,6}) { Job j=job();j.setExperienceMinYears(years);j.setEducationRequirement(years<=2?"JUNIOR_COLLEGE":years<=4?"BACHELOR":years==5?"MASTER":"DOCTOR");jobs.updateById(j); }
+        for(String range:List.of("1_3","3_5","5_PLUS")) send("GET","/api/jobs?experience="+range,seeker,null).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2));
+        send("GET","/api/jobs?education=BACHELOR",seeker,null).andExpect(jsonPath("$.data.total").value(4));
+        send("GET","/api/jobs?education=MASTER&experience=5_PLUS",seeker,null).andExpect(jsonPath("$.data.total").value(2));
+        send("GET","/api/jobs?education=OTHER",seeker,null).andExpect(jsonPath("$.data.total").value(0));
+        send("GET","/api/jobs?education=invalid",seeker,null).andExpect(status().isBadRequest());
+    }
     @Test void companyMetadataFiltersAndCachedDetailsUseCurrentProfile() throws Exception {
         Job j=job(); j.setExperienceMinYears(2); jobs.updateById(j);
         company.setIndustry("软件服务"); company.setCompanySize("100_499"); profiles.updateById(company);
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/jobs/search"),any())).thenReturn(json.readTree("{\"matches\":[{\"jobId\":\""+j.getId()+"\",\"jobVersion\":1,\"similarity\":0.8}]}"));
         JsonNode cached=data(mvc.perform(get("/api/jobs/"+j.getId())).andExpect(status().isOk()).andExpect(jsonPath("$.data.companySize").value("100_499")));
         mvc.perform(get("/api/jobs").param("industry","软件").param("companySize","100_499").param("experience","1_3"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
