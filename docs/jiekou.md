@@ -206,7 +206,7 @@ Java 和 Python 的 JSON 接口均返回此信封；下文“输出”描述的�
 - `MatchResult`：`{score: integer(0..100), reasons: string[], gaps: string[]}`。
 - `InterviewResult`：`{questions: [{number: integer(1..10), question: string, direction: string, assessmentPoints: string[]}]}`，必须恰好 10 道，无标准答案要求。
 - `AssistantResult`：`{answer: string}`，最多 8000 字，不保存多轮上下文；可保存单次任务结果用于轮询。
-- `Candidate`：`{candidateId: string, resumeId: string, resumeVersion: integer, name: string, education: string|null, skills: string[], summary: string|null, similarity: number(0..1)}`。姓名为已确认姓名，不返回手机号、附件或全文。similarity 是向量相似度，不是大模型匹配分数。
+- `Candidate`：`{candidateId: string, resumeId: string, resumeVersion: integer, name: string, education: string|null, skills: string[], summary: string|null, similarity: number(0..1), reason: string, reasonEvidence: [{candidateField, candidateQuote, jobField, jobQuote}]}`。姓名为已确认姓名，不返回手机号、附件或全文。similarity 是向量相似度，不是大模型匹配分数。
 
 ## 3. 注册、登录与个人资料
 
@@ -447,22 +447,7 @@ X-CSRF-Token: ...
 {questions: [{number: 1, question: "如何保证重复投递不会产生多条记录？", direction: "数据库与并发", assessmentPoints: ["唯一约束", "事务处理"]}, ...共10项]}
 ```
 
-### 10.4 求职助手
-
-`POST /internal/ai/assistant`
-
-输入：
-
-```json
-{
-  "question": "我适合什么岗位？",
-  "profile": {"name":"张三","education":"BACHELOR","skills":["Java","MySQL"],"summary":"有Java项目经验"}
-}
-```
-
-profile 中 summary 可为 null，其他字段必填。无需传手机号。输出 data：`{"answer":"可以优先考虑Java后端开发实习或初级岗位……"}`。
-
-### 10.5 简历向量写入
+### 10.4 简历向量写入
 
 `PUT /internal/vector/resumes/{resumeId}/versions/{resumeVersion}`
 
@@ -479,13 +464,13 @@ profile 中 summary 可为 null，其他字段必填。无需传手机号。输�
 
 按 `resumeId:resumeVersion` 作为 Chroma document ID 幂等 upsert，同版本重试不会重复插入。解析成功时可先写 confirmed=false；用户确认后写新版本并清理旧版本。检索文本由 Java 组装，尽量去除姓名、电话等非匹配字段；确认后以最终资料替换结构化部分。向量模型和维度由配置固定，更换模型需要重建集合，禁止混用。
 
-### 10.6 简历向量删除
+### 10.5 简历向量删除
 
 `DELETE /internal/vector/resumes/{resumeId}/versions/{resumeVersion}`
 
 输入：路径 resumeId、resumeVersion；无 body。输出 data：`{resumeId: string, resumeVersion: integer, deleted: true}`；不存在也成功。Java 在旧版本、删除、关闭发现、封禁时安排清理对应版本；检索白名单确保迟到的向量写入不会重新暴露无效版本。
 
-### 10.7 人才向量检索
+### 10.6 人才向量检索
 
 `POST /internal/vector/talents/search`
 
@@ -513,7 +498,7 @@ profile 中 summary 可为 null，其他字段必填。无需传手机号。输�
 
 Java 根据返回 ID 重新校验并读取确认资料，组装外部 Candidate。职位查询向量可按 jobId/jobVersion 缓存，不要求单独持久化职位向量集合。Chroma 或 embedding 服务不可用返回 50301，不能伪装成成功的空推荐。
 
-### 10.8 健康检查
+### 10.7 健康检查
 
 `GET /internal/health`
 
@@ -847,3 +832,94 @@ Python POST /internal/vector/jobs/search 新增可选 resumeText；POST /interna
 - result.retrieval记录scope、candidateCount、reviewedCount、complete，便于诊断实际执行范围；回答用自然语言说明结果范围，不向用户暴露字段名或程序参数。
 - Python通用提示词集中于 app/prompts.py（PLAN/REVIEW/ANSWER）；不再用包含“应届/远程”等关键词的Java分支替代通用条件理解。远程、经验、专业深度、地点、薪资、职业方向等均按各自真实含义审核，条件不互相替代。
 - 无匹配结果时准确说明本轮未找到，不能附带推荐用户已排除的职业，也不能声称平台无法重新检索或要求用户提供平台岗位数据。
+
+
+## 2026-09-16 企业智能寻才：召回后增强生成
+
+- POST /api/company/jobs/{jobId}/talent-search 保持请求参数与向量召回不变：topK、minSimilarity、资格白名单、排序、similarity含义均沿用原逻辑，不写人岗匹配分。
+- 每个Candidate新增reason（1–400字）和reasonEvidence（最多3组，含candidateField、candidateQuote、jobField、jobQuote）。前端展示匹配原因，并可展开核对简历依据/职位依据；原姓名、学历、技能、摘要、similarity保留。
+- Java在召回并复核后，使用当前职位与候选人已确认简历的学历、技能、工作年限及五类可选经历构建证据。每人约6000字符预算，不发送姓名/电话字段、年龄、附件路径、原始简历全文或未确认的AI摘要；简历摘要仍按原接口展示，但不作为新增reason的依据。
+- Python POST /internal/ai/talent-reasons 输入 {jobFacts:{字段:事实文本}, candidates:[{resumeId,resumeVersion,facts:{字段:事实文本}}]}，每批最多10人。返回 {candidates:[{resumeId,resumeVersion,reason,evidence:[{candidateField,candidateQuote,jobField,jobQuote}]}]}。
+- Python和Java均校验候选ID、版本、完整性、重复记录及引用片段。每个quote必须是对应事实字段中真实存在的连续原文，最长160字；其他候选人的资料不能作为证据。模型输出顺序不改变向量召回顺序。
+- 没有足够依据时reason明确提示证据不足，evidence为空，不因向量相似度高而编造匹配经历。引用真实性校验不等同于对自然语言推断正确性的绝对保证，企业可以查看依据进一步判断。
+- LLM失败或引用不合法时返回错误并允许重新检索，不静默返回无原因列表。空召回不调用LLM。前端请求等待时长提高至300秒并显示正在检索及生成原因。
+- LLM完成后再次校验职位状态/版本、企业身份和候选人当前简历版本/可发现性/投递状态。生成期间关闭发现权限的候选人不会被返回。reason为本次实时生成结果，不写回简历或匹配分表。
+
+
+## 2026-09-16 站内通知与招聘邀请
+
+### 入口和公共约定
+
+- 企业：智能寻才候选人卡片「邀请投递」；投递详情「邀请面试」；顶部通知入口可查看消息和发出的邀请。
+- 求职者：顶部通知入口查看消息和收到的邀请；详情中拒绝、接受面试或确认当前简历后投递。
+- 通知与邀请状态独立。全部标为已读不会改变邀请状态。打开邀请详情才将求职者的 UNVIEWED 改为 PENDING。
+- 全部接口复用 Session、X-Profile-Id 和写请求 X-CSRF-Token 校验。ID 为字符串，时间含时区。列表采用 PageResult，page 默认 1、size 默认 10、最大 50。
+- 新表：recruitment_invitation（type 区分两种邀请）和 notification。已有库只执行 `docs/migrations/20260916-invitations.sql`；不要重跑初始化脚本。新建库的 init.sql 已包含两张表。
+
+### 状态
+
+| 状态 | 含义 | 投递邀请 | 面试邀请 |
+|---|---|---|---|
+| UNVIEWED | 未查看 | 是 | 是 |
+| PENDING | 待处理，已打开详情 | 是 | 是 |
+| APPLIED | 已成功投递 | 是 | 否 |
+| ACCEPTED | 已接受 | 否 | 是 |
+| REJECTED | 已拒绝 | 是 | 是 |
+| EXPIRED | 已失效 | 是 | 是 |
+
+发送后 72 小时内未处理自动失效；面试邀请有效期为发送后 72 小时与面试开始时间的较早者。查看不会延长有效期。后台每分钟更新，读取和操作同时校验截止时间，服务停机后恢复也能处理过期记录。已接受、已拒绝、已投递不会因三天期限被覆盖；企业撤销、职位关闭、企业/候选人不可用、相关投递撤回或拒绝可使未完成的邀请失效。已接受的面试仍可被企业撤销，投递撤回或职位关闭也会使该面试邀请失效。
+
+投递邀请不能直接接受：必须真实创建 application。点击「去投递」仅展示简历确认信息。普通职位入口完成投递也会同步未失效的投递邀请；过期/拒绝邀请不会被改写为已投递。
+
+### 接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | /api/company/jobs/{id}/application-invitations | 发送投递邀请 |
+| POST | /api/company/applications/{id}/interview-invitations | 发送面试邀请 |
+| GET | /api/invitations | 当前身份收到/发出的邀请 |
+| GET | /api/invitations/{id} | 查询详情，不改变已读状态 |
+| POST | /api/invitations/{id}/view | 打开详情，标记关联通知已读；求职者未查看状态变待处理 |
+| POST | /api/invitations/{id}/respond | 求职者接受面试或拒绝邀请 |
+| POST | /api/company/invitations/{id}/cancel | 企业撤销自己发出的邀请 |
+| GET | /api/notifications | 当前身份通知列表 |
+| GET | /api/notifications/unread-count | 返回 `{ "count": 0 }` |
+| POST | /api/notifications/{id}/read | 标记自己的单条通知已读 |
+| POST | /api/notifications/read-all | 标记自己的全部通知已读 |
+
+列表 `/api/invitations` 支持可选 jobId、applicationId、candidateId、type 过滤，但始终限定当前身份的所属范围。
+
+投递邀请请求：
+```json
+{ "candidateId": "1", "resumeId": "30", "resumeVersion": 2, "message": "欢迎了解我们的职位" }
+```
+发送时校验本企业有效职位、当前已确认且索引就绪的对应简历、人才发现授权、账号状态以及未投递该职位。
+
+面试邀请请求：
+```json
+{ "interviewAt": "2026-09-20T10:00:00+08:00", "interviewMode": "ONLINE", "location": "会议链接或参会方式", "message": "请准备项目介绍" }
+```
+interviewAt 必须带时区且晚于现在；interviewMode 为 ONLINE/OFFLINE；location 必填不超过 500 字；message 选填不超过 1000 字。投递必须属于本企业且处于 SUBMITTED/VIEWED/SHORTLISTED。
+
+处理请求：`{ "action": "ACCEPT" }` 或 `{ "action": "REJECT" }`。ACCEPT 仅允许面试邀请。重复处理、失效后操作返回 409；越权资源返回 404。
+
+原 `POST /api/applications` 新增可选 invitationId。来自邀请页时传入，后端校验归属、职位及有效期。原有 jobId/resumeId/resumeVersion 调用保持兼容。
+
+Invitation 返回：id、type、companyId、candidateId、jobId、applicationId（未投递的投递邀请为空）、jobTitle、companyName、candidateName、message、status、interviewAt、interviewMode、location、expiresAt、viewedAt、respondedAt（终结时间）、invalidReason、createdAt、updatedAt。不返回内部 activeKey。
+
+Notification 返回：id、recipientId、invitationId、title、body、readAt、createdAt、updatedAt。前端通过 invitationId 跳转详情。接收邀请、对方接受/拒绝、实际完成投递、企业撤销会产生对应通知。未读数每 30 秒更新，回到页面及本地读取操作后也刷新。
+
+### 并发与限制
+
+- 发送邀请与投递按职位行锁串行化；active_key 唯一约束兜底阻止重复有效邀请。
+- 每企业每分钟最多发送 30 次，同类型/职位/候选人三天内最多发送一次；已接受的面试不能重复邀请，需先撤销。
+- 状态采用条件更新，重复接受/拒绝不会产生重复回应通知；业务变更和通知同事务落库。
+- 邀请不自动投递，也不改变原有投递筛选状态；接受面试不会自动把投递改成 SHORTLISTED。
+- 前端路径：/notifications、/invitations/:id。仅求职者和审核通过的企业可进入。
+
+
+### 投递详情交互调整（2026-09-16）
+
+企业进入投递详情调用 `POST /api/company/applications/{id}/view`，自动将 SUBMITTED 改为 VIEWED 并返回完整投递详情。重复打开保持幂等，SHORTLISTED、REJECTED、WITHDRAWN 不会回退。仅职位所属企业可操作，沿用 CSRF 和身份校验。求职者查看以及原 GET 详情接口不改变状态。
+
+企业详情顶部仅保留「邀请面试」「标记已拒绝」，移除手动标记已查看、标记已入选及刷新状态。详情页不展示面试邀请记录模块，邀请发送后提示到通知中心查看。

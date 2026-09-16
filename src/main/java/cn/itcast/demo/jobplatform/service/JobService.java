@@ -20,6 +20,7 @@ import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
  */
 @Service
 public class JobService {
+    private final InvitationService invitations;
     private final JobMapper jobs;
     private final JobRecommendationService recommendations;
     private final JobVectorService vectors;
@@ -30,7 +31,8 @@ public class JobService {
     private final AuditService audit;
     private static final String PUBLIC_COMPANIES = "select p.id from profile_details p join account a on a.id=p.account_id where p.role='COMPANY' and p.enabled=1 and a.enabled=1 and p.review_status='APPROVED'";
 
-    public JobService(JobRecommendationService recommendations, JobVectorService vectors, JobMapper jobs, ProfileRepository profiles, ApplicationMapper applications, BusinessSupport b, BusinessRedis redis, AuditService audit) {
+    public JobService(InvitationService invitations, JobRecommendationService recommendations, JobVectorService vectors, JobMapper jobs, ProfileRepository profiles, ApplicationMapper applications, BusinessSupport b, BusinessRedis redis, AuditService audit) {
+        this.invitations = invitations;
         this.recommendations = recommendations;
         this.vectors = vectors;
         this.jobs = jobs;
@@ -298,6 +300,7 @@ public class JobService {
         j.setReviewReason(reason);
         jobs.update(j, new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<Job>().eq("id", id).set("review_reason", reason));
         vectors.enqueue(j, !"APPROVED".equals(j.getStatus()));
+        invitations.refreshJob(id);
         redis.evictJob(id, j.getVersion());
         audit.record(p.getId(), "JOB", id, action, reason, b.object("status", before), b.object("status", j.getStatus()));
         return view(j, false);

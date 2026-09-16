@@ -63,4 +63,34 @@ class RecruitmentMySqlIntegrationTests extends RecruitmentIntegrationTests {
         send("GET",path+"&ageMin=40&ageMax=20",company,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
         send("GET",path+"&experience=3_5",other,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(0));
     }
+
+    @org.junit.jupiter.api.Test
+    @org.springframework.transaction.annotation.Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
+    void concurrentInvitationSendsAndResponsesHaveOneWinner() throws Exception {
+        var j=job(); var r=resume();
+        var body=Map.of("candidateId",seeker.getId(),"resumeId",r.getId(),"resumeVersion",1);
+        var pool=java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var gate=new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.Callable<Integer> sending=()-> { gate.await(); return send("POST","/api/company/jobs/"+j.getId()+"/application-invitations",company,body).andReturn().getResponse().getStatus(); };
+            var first=pool.submit(sending); var second=pool.submit(sending); gate.countDown();
+            org.assertj.core.api.Assertions.assertThat(List.of(first.get(10,java.util.concurrent.TimeUnit.SECONDS),second.get(10,java.util.concurrent.TimeUnit.SECONDS))).containsExactlyInAnyOrder(200,409);
+            var aid=data(send("POST","/api/applications",seeker,new cn.itcast.demo.jobplatform.dto.RecruitmentRequests.Apply(j.getId(),r.getId(),1))).path("id").asText();
+            var id=data(send("POST","/api/company/applications/"+aid+"/interview-invitations",company,Map.of("interviewAt",BusinessSupport.now().plusDays(2).atOffset(java.time.ZoneOffset.ofHours(8)).toString(),"interviewMode","ONLINE","location","视频会议室"))).path("id").asText();
+            var respondGate=new java.util.concurrent.CountDownLatch(1);
+            var accept=pool.submit(()-> { respondGate.await(); return send("POST","/api/invitations/"+id+"/respond",seeker,Map.of("action","ACCEPT")).andReturn().getResponse().getStatus(); });
+            var reject=pool.submit(()-> { respondGate.await(); return send("POST","/api/invitations/"+id+"/respond",seeker,Map.of("action","REJECT")).andReturn().getResponse().getStatus(); });
+            respondGate.countDown();
+            org.assertj.core.api.Assertions.assertThat(List.of(accept.get(10,java.util.concurrent.TimeUnit.SECONDS),reject.get(10,java.util.concurrent.TimeUnit.SECONDS))).containsExactlyInAnyOrder(200,409);
+            org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("select count(*) from notification where invitation_id=? and recipient_id=?",Long.class,Long.valueOf(id),company.getId())).isEqualTo(1L);
+        } finally {
+            pool.shutdownNow();
+            jdbc.update("delete from notification where invitation_id in (select id from recruitment_invitation where job_id=?)",j.getId());
+            jdbc.update("delete from recruitment_invitation where job_id=?",j.getId());
+            jdbc.update("delete from ai_task where job_id=?",j.getId());
+            jdbc.update("delete from application where job_id=?",j.getId());
+            jdbc.update("delete from job where id=?",j.getId());
+            jdbc.update("delete from resume where id=?",r.getId());
+        }
+    }
 }

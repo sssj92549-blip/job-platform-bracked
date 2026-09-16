@@ -26,6 +26,7 @@ import static cn.itcast.demo.jobplatform.service.BusinessSupport.*;
  */
 @Service
 public class ApplicationService {
+    private final InvitationService invitations;
     private final ApplicationMapper applications;
     private final AiTaskMapper aiTasks;
     private final ResumeMapper resumes;
@@ -39,7 +40,8 @@ public class ApplicationService {
     private final FileStorageService files;
     private final TransactionTemplate tx;
 
-    public ApplicationService(AiTaskMapper aiTasks, ApplicationMapper applications, ResumeMapper resumes, ResumeJobMatchMapper matches, ProfileRepository profiles, JobService jobs, ResumeService resumeService, BusinessSupport b, BusinessRedis redis, AuditService audit, FileStorageService files, PlatformTransactionManager tm) {
+    public ApplicationService(InvitationService invitations, AiTaskMapper aiTasks, ApplicationMapper applications, ResumeMapper resumes, ResumeJobMatchMapper matches, ProfileRepository profiles, JobService jobs, ResumeService resumeService, BusinessSupport b, BusinessRedis redis, AuditService audit, FileStorageService files, PlatformTransactionManager tm) {
+        this.invitations = invitations;
         this.aiTasks = aiTasks;
         this.applications = applications;
         this.resumes = resumes;
@@ -103,6 +105,7 @@ public class ApplicationService {
         try {
             return tx.execute(s -> {
                 Job j = jobs.require(input.jobId(), true);
+                if (input.invitationId() != null) invitations.validateApply(input.invitationId(), p, j.getId());
                 Profile company = profiles.selectOne(new QueryWrapper<Profile>().eq("id", j.getCompanyId()).last("FOR UPDATE"));
                 if (!"APPROVED".equals(j.getStatus()) || !b.available(company)) state("职位当前不可投递");
                 Resume r = resumeService.confirmed(input.resumeId(), input.resumeVersion(), p.getId());
@@ -117,6 +120,7 @@ public class ApplicationService {
                 a.setJobSnapshot(b.write(jobs.view(j, true)));
                 a.setResumeSnapshot(b.write(b.object("confirmedProfile", b.read(r.getConfirmedProfile()), "originalProfile", b.read(r.getOriginalProfile()), "aiProfile", b.object("name", r.getParsedName(), "phone", r.getParsedPhone(), "education", r.getParsedEducation(), "skills", b.read(r.getParsedSkills())), "conflictStatus", r.getConflictStatus(), "conflicts", b.read(r.getConflicts()), "extractedText", r.getExtractedText(), "optionalSections", resumeService.optionalSections(r))));
                 applications.insert(a);
+                invitations.applied(a);
                 enqueueMatch(a, company.getId());
                 return view(a, false);
             });
@@ -203,6 +207,17 @@ public class ApplicationService {
         return view(own(id, b.actor(request, "JOB_SEEKER", "COMPANY"), false), false);
     }
 
+    /** 企业实际打开详情时记录查看；重复打开不覆盖筛选或撤回状态。 */
+    @Transactional
+    public ObjectNode opened(Long id, HttpServletRequest request) {
+        Application a = own(id, b.actor(request, "COMPANY"), true);
+        if ("SUBMITTED".equals(a.getStatus())) {
+            a.setStatus("VIEWED");
+            applications.updateById(a);
+        }
+        return view(a, false);
+    }
+
     @Transactional
     public ObjectNode change(Long id, String status, String source, HttpServletRequest request) {
         Profile p = b.actor(request, "WITHDRAWN".equals(status) ? "JOB_SEEKER" : "COMPANY");
@@ -224,6 +239,7 @@ public class ApplicationService {
             a.setStatus(status);
         }
         applications.updateById(a);
+        if (List.of("WITHDRAWN", "REJECTED").contains(a.getStatus())) invitations.invalidateApplication(a.getId());
         return view(a, false);
     }
 

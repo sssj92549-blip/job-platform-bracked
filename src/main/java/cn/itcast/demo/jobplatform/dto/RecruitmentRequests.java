@@ -58,7 +58,8 @@ public final class RecruitmentRequests {
     }
 
     public record Apply(@NotNull @Positive Long jobId, @NotNull @Positive Long resumeId,
-                        @NotNull @Min(1) Integer resumeVersion) {
+                        @NotNull @Min(1) Integer resumeVersion, @Positive Long invitationId) {
+        public Apply(Long jobId, Long resumeId, Integer resumeVersion) { this(jobId,resumeId,resumeVersion,null); }
     }
 
     public record ApplicationStatus(@NotNull @Pattern(regexp = "VIEWED|SHORTLISTED|REJECTED") String status) {

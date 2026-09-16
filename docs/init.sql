@@ -377,3 +377,51 @@ CREATE TABLE IF NOT EXISTS job_vector_task (
  KEY idx_job_vector_order(job_id,id),
  CONSTRAINT fk_job_vector_job FOREIGN KEY (job_id) REFERENCES job(id)
 );
+
+-- 增量迁移；不修改既有投递、简历和账号数据。MySQL 8 / H2 MySQL mode。
+CREATE TABLE IF NOT EXISTS recruitment_invitation (
+ id BIGINT PRIMARY KEY,
+ type VARCHAR(20) NOT NULL,
+ company_id BIGINT NOT NULL,
+ candidate_id BIGINT NOT NULL,
+ job_id BIGINT NOT NULL,
+ application_id BIGINT NULL,
+ job_title VARCHAR(200) NOT NULL,
+ company_name VARCHAR(200) NOT NULL,
+ candidate_name VARCHAR(200) NOT NULL,
+ message VARCHAR(1000) NOT NULL,
+ status VARCHAR(20) NOT NULL,
+ active_key VARCHAR(120) NULL,
+ interview_at DATETIME(3) NULL,
+ interview_mode VARCHAR(20) NULL,
+ location VARCHAR(500) NULL,
+ expires_at DATETIME(3) NOT NULL,
+ viewed_at DATETIME(3) NULL,
+ responded_at DATETIME(3) NULL,
+ invalid_reason VARCHAR(200) NULL,
+ created_at DATETIME(3) NOT NULL,
+ updated_at DATETIME(3) NOT NULL,
+ CONSTRAINT uk_invitation_active UNIQUE(active_key),
+ CONSTRAINT fk_invitation_company FOREIGN KEY(company_id) REFERENCES profile(id),
+ CONSTRAINT fk_invitation_candidate FOREIGN KEY(candidate_id) REFERENCES profile(id),
+ CONSTRAINT fk_invitation_job FOREIGN KEY(job_id) REFERENCES job(id),
+ CONSTRAINT fk_invitation_application FOREIGN KEY(application_id) REFERENCES application(id),
+ CONSTRAINT ck_invitation_type CHECK(type IN ('APPLICATION','INTERVIEW')),
+ CONSTRAINT ck_invitation_status CHECK(status IN ('UNVIEWED','PENDING','APPLIED','ACCEPTED','REJECTED','EXPIRED')),
+ KEY idx_invitation_candidate(candidate_id,created_at),
+ KEY idx_invitation_company(company_id,created_at),
+ KEY idx_invitation_expiry(status,expires_at)
+);
+CREATE TABLE IF NOT EXISTS notification (
+ id BIGINT PRIMARY KEY,
+ recipient_id BIGINT NOT NULL,
+ invitation_id BIGINT NOT NULL,
+ title VARCHAR(200) NOT NULL,
+ body VARCHAR(1000) NOT NULL,
+ read_at DATETIME(3) NULL,
+ created_at DATETIME(3) NOT NULL,
+ updated_at DATETIME(3) NOT NULL,
+ CONSTRAINT fk_notification_recipient FOREIGN KEY(recipient_id) REFERENCES profile(id),
+ CONSTRAINT fk_notification_invitation FOREIGN KEY(invitation_id) REFERENCES recruitment_invitation(id),
+ KEY idx_notification_recipient(recipient_id,read_at,created_at)
+);

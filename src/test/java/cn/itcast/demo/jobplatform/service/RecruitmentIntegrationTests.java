@@ -52,6 +52,8 @@ class RecruitmentIntegrationTests {
     @Autowired VectorSyncTaskMapper vectorTasks;
     @Autowired ResumeJobMatchMapper matches;
     @Autowired ResumeService resumeService;
+    @Autowired InvitationService invitations;
+    @Autowired InvitationMapper invitationMapper;
     @Autowired AiTaskService ai;
     @Autowired VectorSyncService vectors;
     @MockitoBean LoginGuard loginGuard;
@@ -314,6 +316,53 @@ class RecruitmentIntegrationTests {
         when(python.call(any(),anyString(),any())).thenReturn(json.readTree("{\"score\":101,\"reasons\":[],\"gaps\":[]}")); ai.processOne();
         assertThat(tasks.selectById(id).getStatus()).isEqualTo("FAILED"); assertThat(tasks.selectById(id).getErrorCode()).isEqualTo(42201);
     }
+    private JsonNode talentRecall(Resume... values) {
+        var out=json.createObjectNode(); var list=out.putArray("matches");
+        for(int i=0;i<values.length;i++) list.addObject().put("resumeId",values[i].getId().toString()).put("resumeVersion",values[i].getVersion()).put("similarity",0.9-i*0.1);
+        return out;
+    }
+    private JsonNode talentReasons(JsonNode input) {
+        var out=json.createObjectNode(); var list=out.putArray("candidates");
+        for(int i=input.path("candidates").size()-1;i>=0;i--) {
+            var source=input.path("candidates").get(i);
+            assertThat(source.path("facts").has("name")).isFalse();
+            assertThat(source.path("facts").has("contactPhone")).isFalse();
+            var item=list.addObject().put("resumeId",source.path("resumeId").asText()).put("resumeVersion",source.path("resumeVersion").asInt()).put("reason","已确认的Java技能与职位要求对应。");
+            item.putArray("evidence").addObject().put("candidateField","skills").put("candidateQuote","Java").put("jobField","requirements").put("jobQuote","Java");
+        }
+        return out;
+    }
+    @Test void talentReasonsKeepRecallOrderSimilarityAndVerifiedEvidence() throws Exception {
+        Job j=job(); Resume first=resume(); Profile original=seeker;
+        seeker=profile("JOB_SEEKER"); Resume second=resume(); seeker=original;
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/talents/search"),any())).thenReturn(talentRecall(first,second));
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/talent-reasons"),any())).thenAnswer(call->talentReasons(call.getArgument(2)));
+        send("POST","/api/company/jobs/"+j.getId()+"/talent-search",company,new Talent(10,0.6)).andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.returnedCount").value(2))
+            .andExpect(jsonPath("$.data.candidates[0].resumeId").value(first.getId().toString()))
+            .andExpect(jsonPath("$.data.candidates[1].resumeId").value(second.getId().toString()))
+            .andExpect(jsonPath("$.data.candidates[0].similarity").value(0.9))
+            .andExpect(jsonPath("$.data.candidates[0].reason").value("已确认的Java技能与职位要求对应。"))
+            .andExpect(jsonPath("$.data.candidates[0].reasonEvidence[0].candidateQuote").value("Java"));
+        assertThat(matches.selectCount(null)).isZero();
+    }
+    @Test void talentReasonsRejectInventedEvidence() throws Exception {
+        Job j=job(); Resume r=resume();
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/talents/search"),any())).thenReturn(talentRecall(r));
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/talent-reasons"),any())).thenAnswer(call->{
+            var result=talentReasons(call.getArgument(2));
+            ((com.fasterxml.jackson.databind.node.ObjectNode)result.path("candidates").get(0).path("evidence").get(0)).put("candidateQuote","五年Java开发经验"); return result;
+        });
+        send("POST","/api/company/jobs/"+j.getId()+"/talent-search",company,new Talent(10,0.6)).andExpect(status().isUnprocessableEntity());
+    }
+    @Test void talentSearchRechecksPrivacyAfterReasonGeneration() throws Exception {
+        Job j=job(); Resume r=resume();
+        when(python.call(eq(HttpMethod.POST),eq("/internal/vector/talents/search"),any())).thenReturn(talentRecall(r));
+        when(python.call(eq(HttpMethod.POST),eq("/internal/ai/talent-reasons"),any())).thenAnswer(call->{
+            seeker.setDiscoverable(false); profiles.updateById(seeker); return talentReasons(call.getArgument(2));
+        });
+        send("POST","/api/company/jobs/"+j.getId()+"/talent-search",company,new Talent(10,0.6)).andExpect(status().isOk()).andExpect(jsonPath("$.data.returnedCount").value(0));
+    }
     @Test void talentSearchRechecksPrivacyAfterPythonReturns() throws Exception {
         Job j=job(); Resume r=resume();
         when(python.call(eq(HttpMethod.POST),eq("/internal/vector/talents/search"),any())).thenAnswer(inv->{
@@ -436,5 +485,149 @@ class RecruitmentIntegrationTests {
         });
         resumeService.processOne(); Resume latest=resumes.selectById(r.getId());
         assertThat(latest.getVersion()).isEqualTo(2); assertThat(latest.getParsedName()).isNull(); assertThat(latest.getExtractedText()).isEqualTo(r.getExtractedText());
+    }
+
+    private String inviteApply(Job j, Resume r) throws Exception {
+        return data(send("POST","/api/company/jobs/"+j.getId()+"/application-invitations",company,
+            Map.of("candidateId",seeker.getId(),"resumeId",r.getId(),"resumeVersion",r.getVersion(),"message","期待了解你的经历"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("UNVIEWED"))).path("id").asText();
+    }
+    private String inviteInterview(String applicationId, java.time.LocalDateTime time) throws Exception {
+        return data(send("POST","/api/company/applications/"+applicationId+"/interview-invitations",company,
+            Map.of("interviewAt",time.atOffset(java.time.ZoneOffset.ofHours(8)).toString(),"interviewMode","ONLINE","location","视频会议室 123","message","请准备项目介绍"))
+            .andExpect(status().isOk())).path("id").asText();
+    }
+    @Test void invitationReadStateIsIndependentAndViewingDoesNotExtendDeadline() throws Exception {
+        Job j=job(); Resume r=resume(); String id=inviteApply(j,r);
+        JsonNode initial=data(send("GET","/api/invitations/"+id,seeker,null));
+        send("GET","/api/notifications/unread-count",seeker,null).andExpect(jsonPath("$.data.count").value(1));
+        send("POST","/api/notifications/read-all",seeker,null).andExpect(status().isOk());
+        send("GET","/api/invitations/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("UNVIEWED"));
+        send("POST","/api/invitations/"+id+"/view",company,null).andExpect(jsonPath("$.data.status").value("UNVIEWED"));
+        send("POST","/api/invitations/"+id+"/view",seeker,null).andExpect(jsonPath("$.data.status").value("PENDING"))
+            .andExpect(jsonPath("$.data.expiresAt").value(initial.path("expiresAt").asText()));
+        send("POST","/api/invitations/"+id+"/respond",seeker,Map.of("action","ACCEPT")).andExpect(status().isBadRequest());
+        assertThat(applications.selectCount(null)).isZero();
+        send("POST","/api/invitations/"+id+"/respond",seeker,Map.of("action","REJECT")).andExpect(jsonPath("$.data.status").value("REJECTED"));
+        send("GET","/api/notifications/unread-count",company,null).andExpect(jsonPath("$.data.count").value(1));
+        send("POST","/api/invitations/"+id+"/respond",seeker,Map.of("action","REJECT")).andExpect(status().isConflict());
+        send("POST","/api/company/jobs/"+j.getId()+"/application-invitations",company,
+            Map.of("candidateId",seeker.getId(),"resumeId",r.getId(),"resumeVersion",1)).andExpect(status().isConflict());
+    }
+    @Test void normalApplicationCompletesInvitationAndNotifiesExactlyOnce() throws Exception {
+        Job j=job(); Resume r=resume(); String id=inviteApply(j,r);
+        String applicationId=data(send("POST","/api/applications",seeker,new Apply(j.getId(),r.getId(),1)).andExpect(status().isCreated())).path("id").asText();
+        send("GET","/api/invitations/"+id,company,null).andExpect(jsonPath("$.data.status").value("APPLIED"))
+            .andExpect(jsonPath("$.data.applicationId").value(applicationId));
+        send("GET","/api/notifications/unread-count",company,null).andExpect(jsonPath("$.data.count").value(1));
+        send("POST","/api/applications",seeker,new Apply(j.getId(),r.getId(),1)).andExpect(status().isConflict());
+        send("GET","/api/notifications/unread-count",company,null).andExpect(jsonPath("$.data.count").value(1));
+    }
+    @Test void applyViaInvitationValidatesIdentityJobAndDeadline() throws Exception {
+        Job j=job(); Resume r=resume(); String id=inviteApply(j,r); Job another=job();
+        send("POST","/api/applications",seeker,new Apply(another.getId(),r.getId(),1,Long.valueOf(id))).andExpect(status().isBadRequest());
+        invitationMapper.update(null,new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<Invitation>().eq("id",id).set("expires_at",BusinessSupport.now().minusSeconds(1)));
+        send("POST","/api/applications",seeker,new Apply(j.getId(),r.getId(),1,Long.valueOf(id))).andExpect(status().isConflict());
+        assertThat(applications.selectCount(null)).isZero();
+        send("GET","/api/invitations/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("EXPIRED"));
+        // 普通投递不依赖邀请，但过期邀请不会因此伪装成已投递。
+        send("POST","/api/applications",seeker,new Apply(j.getId(),r.getId(),1)).andExpect(status().isCreated());
+        send("GET","/api/invitations/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("EXPIRED"));
+    }
+    @Test void invitationAccessPrivacyDuplicatesAndCsrfAreEnforced() throws Exception {
+        Job j=job(); Resume r=resume();
+        var body=Map.of("candidateId",seeker.getId(),"resumeId",r.getId(),"resumeVersion",1);
+        String path="/api/company/jobs/"+j.getId()+"/application-invitations";
+        send("POST",path,other,body).andExpect(status().isNotFound());
+        seeker.setDiscoverable(false); profiles.updateById(seeker);
+        send("POST",path,company,body).andExpect(status().isConflict());
+        seeker.setDiscoverable(true); profiles.updateById(seeker);
+        send("POST",path,company,Map.of("candidateId",seeker.getId(),"resumeId",r.getId(),"resumeVersion",2)).andExpect(status().isConflict());
+        String id=inviteApply(j,r);
+        send("POST",path,company,body).andExpect(status().isConflict());
+        Profile stranger=profile("JOB_SEEKER");
+        for(Profile p:List.of(stranger,other)) {
+            send("GET","/api/invitations/"+id,p,null).andExpect(status().isNotFound());
+            send("POST","/api/invitations/"+id+"/view",p,null).andExpect(status().isNotFound());
+            send("GET","/api/invitations",p,null).andExpect(jsonPath("$.data.total").value(0));
+        }
+        String notice=data(send("GET","/api/notifications",seeker,null)).path("records").get(0).path("id").asText();
+        send("POST","/api/notifications/"+notice+"/read",stranger,null).andExpect(status().isNotFound());
+        mvc.perform(post("/api/invitations/"+id+"/view").session(session(seeker)).header("X-Profile-Id",seeker.getId())).andExpect(status().isForbidden());
+        send("POST","/api/company/invitations/"+id+"/cancel",other,null).andExpect(status().isNotFound());
+        send("POST","/api/company/invitations/"+id+"/cancel",company,null).andExpect(jsonPath("$.data.status").value("EXPIRED"));
+        send("POST","/api/invitations/"+id+"/respond",seeker,Map.of("action","REJECT")).andExpect(status().isConflict());
+    }
+    @Test void interviewAcceptIsTerminalUntilCompanyCancelsAndNeverAutoApplies() throws Exception {
+        Job j=job(); Resume r=resume();
+        String aid=data(send("POST","/api/applications",seeker,new Apply(j.getId(),r.getId(),1))).path("id").asText();
+        String id=inviteInterview(aid,BusinessSupport.now().plusDays(5));
+        send("POST","/api/invitations/"+id+"/respond",seeker,Map.of("action","ACCEPT")).andExpect(jsonPath("$.data.status").value("ACCEPTED"));
+        send("POST","/api/invitations/"+id+"/respond",seeker,Map.of("action","REJECT")).andExpect(status().isConflict());
+        invitationMapper.update(null,new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<Invitation>().eq("id",id).set("expires_at",BusinessSupport.now().minusDays(1)));
+        invitations.expire();
+        send("GET","/api/invitations/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("ACCEPTED"));
+        send("POST","/api/company/invitations/"+id+"/cancel",company,null).andExpect(jsonPath("$.data.status").value("EXPIRED"))
+            .andExpect(jsonPath("$.data.invalidReason").value("企业已撤销邀请"));
+        send("GET","/api/notifications/unread-count",seeker,null).andExpect(jsonPath("$.data.count").value(1));
+        assertThat(applications.selectCount(null)).isEqualTo(1);
+    }
+    @Test void interviewDeadlineUsesEarlierTimeAndBackgroundExpiresBothUnviewedAndPending() throws Exception {
+        Job j=job(); Resume r=resume(); String applyId=inviteApply(j,r);
+        invitationMapper.update(null,new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<Invitation>().eq("id",applyId).set("expires_at",BusinessSupport.now().minusSeconds(1)));
+        String aid=data(send("POST","/api/applications",seeker,new Apply(j.getId(),r.getId(),1))).path("id").asText();
+        var time=BusinessSupport.now().plusHours(12).withNano(0); String id=inviteInterview(aid,time);
+        JsonNode interview=data(send("POST","/api/invitations/"+id+"/view",seeker,null));
+        assertThat(interview.path("expiresAt").asText()).isEqualTo(interview.path("interviewAt").asText());
+        invitationMapper.update(null,new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<Invitation>().eq("id",id).set("expires_at",BusinessSupport.now().minusSeconds(1)).set("interview_at",BusinessSupport.now().minusSeconds(1)));
+        invitations.expire(); invitations.expire();
+        send("GET","/api/invitations/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("EXPIRED"));
+        send("GET","/api/invitations/"+applyId,seeker,null).andExpect(jsonPath("$.data.status").value("EXPIRED"));
+        send("POST","/api/invitations/"+id+"/respond",seeker,Map.of("action","ACCEPT")).andExpect(status().isConflict());
+    }
+    @Test void interviewRejectWithdrawAndCloseInvalidateAvailableActions() throws Exception {
+        Job j=job(); Resume r=resume();
+        String aid=data(send("POST","/api/applications",seeker,new Apply(j.getId(),r.getId(),1))).path("id").asText();
+        var input=Map.of("interviewAt",BusinessSupport.now().plusDays(2).atOffset(java.time.ZoneOffset.ofHours(8)).toString(),"interviewMode","ONLINE","location","视频会议室");
+        send("POST","/api/company/applications/"+aid+"/interview-invitations",other,input).andExpect(status().isNotFound());
+        send("POST","/api/company/applications/"+aid+"/interview-invitations",company,
+            Map.of("interviewAt",BusinessSupport.now().minusHours(1).atOffset(java.time.ZoneOffset.ofHours(8)).toString(),"interviewMode","ONLINE","location","会议室")).andExpect(status().isBadRequest());
+        String id=inviteInterview(aid,BusinessSupport.now().plusDays(2));
+        send("POST","/api/company/applications/"+aid+"/interview-invitations",company,input).andExpect(status().isConflict());
+        send("POST","/api/applications/"+aid+"/withdraw",seeker,null).andExpect(status().isOk());
+        send("GET","/api/invitations/"+id,company,null).andExpect(jsonPath("$.data.status").value("EXPIRED"));
+        send("POST","/api/company/applications/"+aid+"/interview-invitations",company,input).andExpect(status().isConflict());
+        Job another=job(); String apply=inviteApply(another,r);
+        send("POST","/api/company/jobs/"+another.getId()+"/close",company,null).andExpect(status().isOk());
+        send("GET","/api/invitations/"+apply,seeker,null).andExpect(jsonPath("$.data.status").value("EXPIRED"));
+    }
+    @Test void validInvitationApplyAndInterviewRejectProduceCorrectFinalStates() throws Exception {
+        Job j=job(); Resume r=resume(); String id=inviteApply(j,r);
+        String aid=data(send("POST","/api/applications",seeker,new Apply(j.getId(),r.getId(),1,Long.valueOf(id))).andExpect(status().isCreated())).path("id").asText();
+        send("GET","/api/invitations/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("APPLIED"));
+        String interview=inviteInterview(aid,BusinessSupport.now().plusDays(4));
+        JsonNode info=data(send("GET","/api/invitations/"+interview,seeker,null));
+        var expiry=java.time.OffsetDateTime.parse(info.path("expiresAt").asText());
+        var created=java.time.OffsetDateTime.parse(info.path("createdAt").asText());
+        assertThat(java.time.Duration.between(created,expiry).getSeconds()).isBetween(259198L,259200L);
+        send("POST","/api/invitations/"+interview+"/respond",seeker,Map.of("action","REJECT")).andExpect(jsonPath("$.data.status").value("REJECTED"));
+        invitations.expire();
+        send("GET","/api/invitations/"+interview,seeker,null).andExpect(jsonPath("$.data.status").value("REJECTED"));
+    }
+
+    @Test void companyOpeningApplicationMarksViewedWithoutRegressingLaterStates() throws Exception {
+        Job j=job(); Resume r=resume();
+        String id=data(send("POST","/api/applications",seeker,new Apply(j.getId(),r.getId(),1))).path("id").asText();
+        String path="/api/company/applications/"+id+"/view";
+        send("GET","/api/applications/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("SUBMITTED"));
+        send("POST",path,other,null).andExpect(status().isNotFound());
+        send("POST",path,seeker,null).andExpect(status().isForbidden());
+        send("POST",path,company,null).andExpect(jsonPath("$.data.status").value("VIEWED"));
+        send("POST",path,company,null).andExpect(jsonPath("$.data.status").value("VIEWED"));
+        send("GET","/api/applications/"+id,seeker,null).andExpect(jsonPath("$.data.status").value("VIEWED"));
+        for(String later:List.of("SHORTLISTED","REJECTED","WITHDRAWN")) {
+            Application a=applications.selectById(Long.valueOf(id)); a.setStatus(later); applications.updateById(a);
+            send("POST",path,company,null).andExpect(jsonPath("$.data.status").value(later));
+        }
     }
 }

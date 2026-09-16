@@ -48,6 +48,11 @@ public class ApplicationController {
         return ResponseEntity.status(200).body(ApiResponse.success(service.change(id, "WITHDRAWN", null, request)));
     }
 
+    @PostMapping("/api/company/applications/{id}/view")
+    public ResponseEntity<?> opened(@PathVariable Long id, HttpServletRequest request) {
+        return ResponseEntity.ok(ApiResponse.success(service.opened(id, request)));
+    }
+
     @PatchMapping("/api/company/applications/{id}/status")
     public ResponseEntity<?> updateStatus(@PathVariable Long id, @Valid @RequestBody ApplicationStatus input, HttpServletRequest request) {
         return ResponseEntity.status(200).body(ApiResponse.success(service.change(id, input.status(), null, request)));
