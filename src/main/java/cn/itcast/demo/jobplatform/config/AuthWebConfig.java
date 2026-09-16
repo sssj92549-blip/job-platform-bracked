@@ -5,7 +5,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
-/** MVC配置：只注册拦截器及路径范围，不承载认证逻辑。 */
+/**
+ * MVC配置：只注册拦截器及路径范围，不承载认证逻辑。
+ */
 @Configuration
 public class AuthWebConfig implements WebMvcConfigurer {
     private final AuthInterceptor authInterceptor;

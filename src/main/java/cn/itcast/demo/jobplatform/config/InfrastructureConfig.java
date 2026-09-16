@@ -19,13 +19,19 @@ import java.time.Duration;
 @org.springframework.scheduling.annotation.EnableScheduling
 @MapperScan("cn.itcast.demo.jobplatform.mapper")
 public class InfrastructureConfig {
-    /** 解析、生成、索引各有调度线程，网络等待不阻塞其他类型任务。 */
+    /**
+     * 解析、生成、索引各有调度线程，网络等待不阻塞其他类型任务。
+     */
     @Bean
     public org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler taskScheduler() {
-        var scheduler=new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
-        scheduler.setPoolSize(3); scheduler.setThreadNamePrefix("persistent-ai-");
-        scheduler.setWaitForTasksToCompleteOnShutdown(true); scheduler.setAwaitTerminationSeconds(30); return scheduler;
+        var scheduler = new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(3);
+        scheduler.setThreadNamePrefix("persistent-ai-");
+        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.setAwaitTerminationSeconds(30);
+        return scheduler;
     }
+
     @Bean
     public MybatisPlusInterceptor mybatisPlusInterceptor() {
         MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();

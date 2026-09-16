@@ -52,7 +52,8 @@ class RecruitmentMySqlIntegrationTests extends RecruitmentIntegrationTests {
         r.setConfirmedProfile(confirmed.toString()); resumes.updateById(r);
         send("POST","/api/applications",seeker,new cn.itcast.demo.jobplatform.dto.RecruitmentRequests.Apply(j.getId(),r.getId(),1)).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isCreated());
         String path="/api/company/applications?jobId="+j.getId();
-        for(String filter:List.of("education=BACHELOR","experience=3_5","ageMin=28","ageMax=28")) send("GET",path+"&"+filter,company,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(1));
+        for(String filter:List.of("education=HIGH_SCHOOL","education=JUNIOR_COLLEGE","education=BACHELOR","experience=3_5","ageMin=28","ageMax=28")) send("GET",path+"&"+filter,company,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(1));
+        send("GET",path+"&education=OTHER",company,null).andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest());
         send("GET",path+"&education=BACHELOR&experience=3_5&ageMin=28&ageMax=28",company,null)
             .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.total").value(1))
             .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.records[0].candidateAge").value(28));
